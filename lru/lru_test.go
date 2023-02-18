@@ -76,6 +76,14 @@ func TestLRUFunctions(t *testing.T) {
 	Equal(t, percentageFull, 0)
 }
 
-// TODO: dedicated test for Function to ensure proper key + value is sent
-// TODO: dedicated test for Max Age
 // TODO: Add benchmarks
+func BenchmarkCache(b *testing.B) {
+	cache := New[string, string]().Capacity(100).MaxAge(time.Second).Build()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			cache.Set("a", "b")
+			cache.Get("a")
+		}
+	})
+}

@@ -77,7 +77,7 @@ type entry[K comparable, V any] struct {
 }
 
 type LRU[K comparable, V any] struct {
-	m                  sync.RWMutex
+	m                  sync.Mutex
 	list               *listext.DoublyLinkedList[entry[K, V]]
 	nodes              map[K]*listext.Node[entry[K, V]]
 	capacity           int
