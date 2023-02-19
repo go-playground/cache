@@ -3,6 +3,7 @@ package lru
 import (
 	. "github.com/go-playground/assert/v2"
 	optionext "github.com/go-playground/pkg/v5/values/option"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -51,7 +52,7 @@ func TestLRUMaxAge(t *testing.T) {
 func TestLRUFunctions(t *testing.T) {
 	hits := 0
 	misses := 0
-	percentageFull := 0
+	percentageFull := uint8(0)
 
 	c := New[string, int]().Capacity(2).
 		HitFn(func(_ string, _ int) {
@@ -60,11 +61,11 @@ func TestLRUFunctions(t *testing.T) {
 		MissFn(func(_ string) {
 			misses++
 		}).
-		PercentageFullFn(func(pf int) {
+		PercentageFullFn(func(pf uint8) {
 			percentageFull = pf
 		}).Build()
 	c.Set("1", 1)
-	Equal(t, percentageFull, 50)
+	Equal(t, percentageFull, uint8(50))
 
 	_ = c.Get("1")
 	Equal(t, hits, 1)
@@ -73,17 +74,47 @@ func TestLRUFunctions(t *testing.T) {
 	Equal(t, misses, 1)
 
 	c.Clear()
-	Equal(t, percentageFull, 0)
+	Equal(t, percentageFull, uint8(0))
 }
 
-// TODO: Add benchmarks
-func BenchmarkCache(b *testing.B) {
+func BenchmarkCacheWithAllRegisteredFunctions(b *testing.B) {
+	var hits int64 = 0
+	var misses int64 = 0
+	var evictions int64 = 0
+	var pf uint32 = 0
+
+	cache := New[string, string]().Capacity(100).MaxAge(time.Second).HitFn(func(_ string, _ string) {
+		atomic.AddInt64(&hits, 1)
+	}).MissFn(func(_ string) {
+		atomic.AddInt64(&misses, 1)
+	}).EvictFn(func(_ string, _ string) {
+		atomic.AddInt64(&evictions, 1)
+	}).PercentageFullFn(func(percentageFull uint8) {
+		atomic.StoreUint32(&pf, uint32(percentageFull))
+	}).Build()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			cache.Set("a", "b")
+			option := cache.Get("a")
+			if option.IsNone() || option.Unwrap() != "b" {
+				panic("undefined behaviour")
+			}
+		}
+	})
+}
+
+func BenchmarkCacheNoRegisteredFunctions(b *testing.B) {
+
 	cache := New[string, string]().Capacity(100).MaxAge(time.Second).Build()
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			cache.Set("a", "b")
-			cache.Get("a")
+			option := cache.Get("a")
+			if option.IsNone() || option.Unwrap() != "b" {
+				panic("undefined behaviour")
+			}
 		}
 	})
 }

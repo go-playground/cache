@@ -7,14 +7,12 @@ import (
 	"time"
 )
 
-// TODO: Benchmark using entry and &entry
-
 type builder[K comparable, V any] struct {
 	lru *LRU[K, V]
 }
 
 // New initializes a builder to create an LRU cache.
-func New[K comparable, V any]() *builder[K, V] {
+func New[K comparable, V any](capacity int) *builder[K, V] {
 	return &builder[K, V]{
 		lru: &LRU[K, V]{
 			list:     listext.NewDoublyLinked[entry[K, V]](),
@@ -58,7 +56,7 @@ func (b *builder[K, V]) EvictFn(fn func(key K, value V)) *builder[K, V] {
 // as an integer with no decimals.
 //
 // It will only be called if the percentage changes value from previous.
-func (b *builder[K, V]) PercentageFullFn(fn func(percentageFull int)) *builder[K, V] {
+func (b *builder[K, V]) PercentageFullFn(fn func(percentageFull uint8)) *builder[K, V] {
 	b.lru.percentageFullFn = fn
 	return b
 }
@@ -82,11 +80,11 @@ type LRU[K comparable, V any] struct {
 	nodes              map[K]*listext.Node[entry[K, V]]
 	capacity           int
 	maxAge             time.Duration
-	lastPercentageFull int
+	lastPercentageFull uint8
 	hitFn              func(key K, value V)
 	missFn             func(key K)
 	evictFn            func(key K, value V)
-	percentageFullFn   func(percentFull int)
+	percentageFullFn   func(percentFull uint8)
 }
 
 // Set sets an item into the cache. It will replace the current entry if there is one.
@@ -113,7 +111,7 @@ func (cache *LRU[K, V]) Set(key K, value V) {
 			}
 		} else {
 			if cache.percentageFullFn != nil {
-				pf := int(float64(cache.list.Len()) / float64(cache.capacity) * 100.0)
+				pf := uint8(float64(cache.list.Len()) / float64(cache.capacity) * 100.0)
 				if pf != cache.lastPercentageFull {
 					cache.lastPercentageFull = pf
 					cache.percentageFullFn(pf)
@@ -169,7 +167,7 @@ func (cache *LRU[K, V]) Clear() {
 		delete(cache.nodes, k)
 	}
 	if cache.percentageFullFn != nil {
-		pf := int(float64(cache.list.Len()) / float64(cache.capacity) * 100.0)
+		pf := uint8(float64(cache.list.Len()) / float64(cache.capacity) * 100.0)
 		if pf != cache.lastPercentageFull {
 			cache.lastPercentageFull = pf
 			cache.percentageFullFn(pf)
