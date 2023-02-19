@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// TODO: capacity must be >= 2 otherwise some logic could panic, add validation to that effect
-
 type builder[K comparable, V any] struct {
 	lfu *LFU[K, V]
 }
@@ -162,7 +160,6 @@ func (cache *LFU[K, V]) Get(key K) (result optionext.Option[V]) {
 				cache.evictFn(key, node.Value.value)
 			}
 		} else {
-
 			nextCount := node.Value.frequency.Value.count + 1
 			// super edge case, int can wrap around, if that's the case don't do anything but
 			// mark as most recently accessed, it's already in the top tier and so want to keep it
@@ -181,9 +178,8 @@ func (cache *LFU[K, V]) Get(key K) (result optionext.Option[V]) {
 				if node.Value.frequency.Value.entries.Len() == 0 {
 					cache.frequencies.Remove(node.Value.frequency)
 				}
-				n := prev.Value.entries.PushFront(node.Value)
-				n.Value.frequency = prev
-				*node = *n
+				node.Value.frequency = prev
+				prev.Value.entries.InsertAtFront(node)
 			}
 			result = optionext.Some(node.Value.value)
 			if cache.hitFn != nil {
