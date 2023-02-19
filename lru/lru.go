@@ -22,12 +22,6 @@ func New[K comparable, V any](capacity int) *builder[K, V] {
 	}
 }
 
-// Capacity sets the maximum capacity for the cache.
-func (b *builder[K, V]) Capacity(capacity int) *builder[K, V] {
-	b.lru.capacity = capacity
-	return b
-}
-
 // MaxAge sets the maximum age of an entry before it should be discarded; passively.
 func (b *builder[K, V]) MaxAge(maxAge time.Duration) *builder[K, V] {
 	b.lru.maxAge = maxAge

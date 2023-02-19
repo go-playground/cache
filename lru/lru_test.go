@@ -10,7 +10,7 @@ import (
 
 func TestLRUBasics(t *testing.T) {
 	evictions := 0
-	c := New[string, int](3).EvictFn(func(_ string, _ int) {
+	c := New[string, int](3).MaxAge(time.Hour).EvictFn(func(_ string, _ int) {
 		evictions++
 	}).Build()
 	c.Set("1", 1)
