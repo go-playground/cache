@@ -17,7 +17,7 @@ func New[K comparable, V any](capacity int) *builder[K, V] {
 		lru: &LRU[K, V]{
 			list:     listext.NewDoublyLinked[entry[K, V]](),
 			nodes:    make(map[K]*listext.Node[entry[K, V]]),
-			capacity: 1_000,
+			capacity: capacity,
 		},
 	}
 }
@@ -74,6 +74,7 @@ type entry[K comparable, V any] struct {
 	ts    time.Time
 }
 
+// LRU is a configured least recently used cache ready for use.
 type LRU[K comparable, V any] struct {
 	m                  sync.Mutex
 	list               *listext.DoublyLinkedList[entry[K, V]]
@@ -91,17 +92,21 @@ type LRU[K comparable, V any] struct {
 func (cache *LRU[K, V]) Set(key K, value V) {
 	cache.m.Lock()
 
-	e := entry[K, V]{
-		key:   key,
-		value: value,
-		ts:    time.Now(),
-	}
-
 	node, found := cache.nodes[key]
 	if found {
-		node.Value = e
+		node.Value.value = value
+		if cache.maxAge > 0 {
+			node.Value.ts = time.Now()
+		}
 		cache.list.MoveToFront(node)
 	} else {
+		e := entry[K, V]{
+			key:   key,
+			value: value,
+		}
+		if cache.maxAge > 0 {
+			e.ts = time.Now()
+		}
 		cache.nodes[key] = cache.list.PushFront(e)
 		if cache.list.Len() > cache.capacity {
 			entry := cache.list.PopBack()

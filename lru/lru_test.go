@@ -10,7 +10,7 @@ import (
 
 func TestLRUBasics(t *testing.T) {
 	evictions := 0
-	c := New[string, int]().Capacity(3).EvictFn(func(_ string, _ int) {
+	c := New[string, int](3).EvictFn(func(_ string, _ int) {
 		evictions++
 	}).Build()
 	c.Set("1", 1)
@@ -38,7 +38,7 @@ func TestLRUBasics(t *testing.T) {
 
 func TestLRUMaxAge(t *testing.T) {
 	evictions := 0
-	c := New[string, int]().Capacity(3).MaxAge(time.Nanosecond).EvictFn(func(_ string, _ int) {
+	c := New[string, int](3).MaxAge(time.Nanosecond).EvictFn(func(_ string, _ int) {
 		evictions++
 	}).Build()
 	c.Set("1", 1)
@@ -54,7 +54,7 @@ func TestLRUFunctions(t *testing.T) {
 	misses := 0
 	percentageFull := uint8(0)
 
-	c := New[string, int]().Capacity(2).
+	c := New[string, int](2).
 		HitFn(func(_ string, _ int) {
 			hits++
 		}).
@@ -83,7 +83,7 @@ func BenchmarkCacheWithAllRegisteredFunctions(b *testing.B) {
 	var evictions int64 = 0
 	var pf uint32 = 0
 
-	cache := New[string, string]().Capacity(100).MaxAge(time.Second).HitFn(func(_ string, _ string) {
+	cache := New[string, string](100).MaxAge(time.Second).HitFn(func(_ string, _ string) {
 		atomic.AddInt64(&hits, 1)
 	}).MissFn(func(_ string) {
 		atomic.AddInt64(&misses, 1)
@@ -106,7 +106,49 @@ func BenchmarkCacheWithAllRegisteredFunctions(b *testing.B) {
 
 func BenchmarkCacheNoRegisteredFunctions(b *testing.B) {
 
-	cache := New[string, string]().Capacity(100).MaxAge(time.Second).Build()
+	cache := New[string, string](100).MaxAge(time.Second).Build()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			cache.Set("a", "b")
+			option := cache.Get("a")
+			if option.IsNone() || option.Unwrap() != "b" {
+				panic("undefined behaviour")
+			}
+		}
+	})
+}
+
+func BenchmarkCacheWithAllRegisteredFunctionsNoMaxAge(b *testing.B) {
+	var hits int64 = 0
+	var misses int64 = 0
+	var evictions int64 = 0
+	var pf uint32 = 0
+
+	cache := New[string, string](100).HitFn(func(_ string, _ string) {
+		atomic.AddInt64(&hits, 1)
+	}).MissFn(func(_ string) {
+		atomic.AddInt64(&misses, 1)
+	}).EvictFn(func(_ string, _ string) {
+		atomic.AddInt64(&evictions, 1)
+	}).PercentageFullFn(func(percentageFull uint8) {
+		atomic.StoreUint32(&pf, uint32(percentageFull))
+	}).Build()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			cache.Set("a", "b")
+			option := cache.Get("a")
+			if option.IsNone() || option.Unwrap() != "b" {
+				panic("undefined behaviour")
+			}
+		}
+	})
+}
+
+func BenchmarkCacheNoRegisteredFunctionsNoMaxAge(b *testing.B) {
+
+	cache := New[string, string](100).Build()
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
