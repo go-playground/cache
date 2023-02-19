@@ -7,69 +7,62 @@ import (
 	"time"
 )
 
-// TODO: int can wrap around and must account for that, triple check.
 // TODO: capacity must be >= 2 otherwise some logic could panic, add validation to that effect
 
-//type builder[K comparable, V any] struct {
-//	lru *LFU[K, V]
-//}
+type builder[K comparable, V any] struct {
+	lfu *LFU[K, V]
+}
+
+// New initializes a builder to create an LFU cache.
+func New[K comparable, V any](capacity int) *builder[K, V] {
+	return &builder[K, V]{
+		lfu: &LFU[K, V]{
+			frequencies: listext.NewDoublyLinked[frequency[K, V]](),
+			entries:     make(map[K]*listext.Node[entry[K, V]]),
+			capacity:    capacity,
+		},
+	}
+}
+
+// MaxAge sets the maximum age of an entry before it should be discarded; passively.
+func (b *builder[K, V]) MaxAge(maxAge time.Duration) *builder[K, V] {
+	b.lfu.maxAge = maxAge
+	return b
+}
+
+// HitFn sets an optional function to call upon cache hit.
+func (b *builder[K, V]) HitFn(fn func(key K, value V)) *builder[K, V] {
+	b.lfu.hitFn = fn
+	return b
+}
+
+// MissFn sets an optional function to call upon cache miss.
+func (b *builder[K, V]) MissFn(fn func(key K)) *builder[K, V] {
+	b.lfu.missFn = fn
+	return b
+}
+
+// EvictFn sets an optional function to call upon cache eviction.
+func (b *builder[K, V]) EvictFn(fn func(key K, value V)) *builder[K, V] {
+	b.lfu.evictFn = fn
+	return b
+}
+
+// PercentageFullFn sets an optional function to call upon cache size change that will be passed the percentage full
+// as an integer with no decimals.
 //
-//// New initializes a builder to create an LFU cache.
-//func New[K comparable, V any](capacity int) *builder[K, V] {
-//	return &builder[K, V]{
-//		lru: &LFU[K, V]{
-//			list:     listext.NewDoublyLinked[entry[K, V]](),
-//			nodes:    make(map[K]*listext.Node[entry[K, V]]),
-//			capacity: capacity,
-//		},
-//	}
-//}
-//
-//// Capacity sets the maximum capacity for the cache.
-//func (b *builder[K, V]) Capacity(capacity int) *builder[K, V] {
-//	b.lru.capacity = capacity
-//	return b
-//}
-//
-//// MaxAge sets the maximum age of an entry before it should be discarded; passively.
-//func (b *builder[K, V]) MaxAge(maxAge time.Duration) *builder[K, V] {
-//	b.lru.maxAge = maxAge
-//	return b
-//}
-//
-//// HitFn sets an optional function to call upon cache hit.
-//func (b *builder[K, V]) HitFn(fn func(key K, value V)) *builder[K, V] {
-//	b.lru.hitFn = fn
-//	return b
-//}
-//
-//// MissFn sets an optional function to call upon cache miss.
-//func (b *builder[K, V]) MissFn(fn func(key K)) *builder[K, V] {
-//	b.lru.missFn = fn
-//	return b
-//}
-//
-//// EvictFn sets an optional function to call upon cache eviction.
-//func (b *builder[K, V]) EvictFn(fn func(key K, value V)) *builder[K, V] {
-//	b.lru.evictFn = fn
-//	return b
-//}
-//
-//// PercentageFullFn sets an optional function to call upon cache size change that will be passed the percentage full
-//// as an integer with no decimals.
-////
-//// It will only be called if the percentage changes value from previous.
-//func (b *builder[K, V]) PercentageFullFn(fn func(percentageFull uint8)) *builder[K, V] {
-//	b.lru.percentageFullFn = fn
-//	return b
-//}
-//
-//// Build finalizes configuration and returns the LFU cache for use.
-//func (b *builder[K, V]) Build() (lru *LFU[K, V]) {
-//	lru = b.lru
-//	b.lru = nil
-//	return lru
-//}
+// It will only be called if the percentage changes value from previous.
+func (b *builder[K, V]) PercentageFullFn(fn func(percentageFull uint8)) *builder[K, V] {
+	b.lfu.percentageFullFn = fn
+	return b
+}
+
+// Build finalizes configuration and returns the LFU cache for use.
+func (b *builder[K, V]) Build() (lru *LFU[K, V]) {
+	lru = b.lfu
+	b.lfu = nil
+	return lru
+}
 
 type entry[K comparable, V any] struct {
 	key       K
@@ -112,7 +105,7 @@ func (cache *LFU[K, V]) Set(key K, value V) {
 
 		// determine or create frequency
 		freq := cache.frequencies.Back()
-		if freq.Value.count != 1 {
+		if freq == nil || freq.Value.count != 1 {
 			freq = cache.frequencies.PushBack(frequency[K, V]{
 				entries: listext.NewDoublyLinked[entry[K, V]](),
 				count:   1,
@@ -163,38 +156,35 @@ func (cache *LFU[K, V]) Get(key K) (result optionext.Option[V]) {
 
 	node, found := cache.entries[key]
 	if found {
-		freq := node.Value.frequency
-		node.Value.frequency = nil // detach
-
 		if cache.maxAge > 0 && time.Since(node.Value.ts) > cache.maxAge {
-			delete(cache.entries, key)
-			freq.Value.entries.Remove(node)
-			if freq.Value.entries.Len() == 0 {
-				cache.frequencies.Remove(freq)
-			}
+			cache.remove(node)
 			if cache.evictFn != nil {
 				cache.evictFn(key, node.Value.value)
 			}
 		} else {
 
-			nextCount := freq.Value.count + 1
-			prev := freq.Prev()
-
-			freq.Value.entries.Remove(node)
-			if freq.Value.entries.Len() == 0 {
-				cache.frequencies.Remove(freq)
+			nextCount := node.Value.frequency.Value.count + 1
+			// super edge case, int can wrap around, if that's the case don't do anything but
+			// mark as most recently accessed, it's already in the top tier and so want to keep it
+			// around.
+			if nextCount <= 0 {
+				node.Value.frequency.Value.entries.MoveToFront(node)
+			} else {
+				prev := node.Value.frequency.Prev()
+				if prev == nil || prev.Value.count != nextCount {
+					prev = cache.frequencies.PushBefore(node.Value.frequency, frequency[K, V]{
+						entries: listext.NewDoublyLinked[entry[K, V]](),
+						count:   nextCount,
+					})
+				}
+				node.Value.frequency.Value.entries.Remove(node)
+				if node.Value.frequency.Value.entries.Len() == 0 {
+					cache.frequencies.Remove(node.Value.frequency)
+				}
+				n := prev.Value.entries.PushFront(node.Value)
+				n.Value.frequency = prev
+				*node = *n
 			}
-
-			if prev == nil || prev.Value.count != nextCount {
-				// create new node
-				prev = cache.frequencies.PushFront(frequency[K, V]{
-					entries: listext.NewDoublyLinked[entry[K, V]](),
-					count:   nextCount,
-				})
-			}
-
-			node := prev.Value.entries.PushFront(node.Value)
-			node.Value.frequency = prev
 			result = optionext.Some(node.Value.value)
 			if cache.hitFn != nil {
 				cache.hitFn(key, node.Value.value)
@@ -207,46 +197,53 @@ func (cache *LFU[K, V]) Get(key K) (result optionext.Option[V]) {
 	return
 }
 
-//// Remove removes the item matching the provided key from the cache, if not present is a noop.
-//func (cache *LFU[K, V]) Remove(key K) {
-//	cache.m.Lock()
-//	if node, found := cache.nodes[key]; found {
-//		delete(cache.nodes, key)
-//		cache.list.Remove(node)
-//	}
-//	cache.m.Unlock()
-//}
-//
-//// Clear empties the cache.
-//func (cache *LFU[K, V]) Clear() {
-//	cache.m.Lock()
-//	cache.list.Clear()
-//	for k := range cache.nodes {
-//		delete(cache.nodes, k)
-//	}
-//	if cache.percentageFullFn != nil {
-//		pf := uint8(float64(cache.list.Len()) / float64(cache.capacity) * 100.0)
-//		if pf != cache.lastPercentageFull {
-//			cache.lastPercentageFull = pf
-//			cache.percentageFullFn(pf)
-//		}
-//	}
-//	cache.m.Unlock()
-//}
-//
-//// Len returns the current size of the cache.
-//// The result will include items that may be expired past the max age as they are passively expired.
-//func (cache *LFU[K, V]) Len() (length int) {
-//	cache.m.Lock()
-//	length = cache.list.Len()
-//	cache.m.Unlock()
-//	return
-//}
-//
-//// Capacity returns the current configured capacity of the cache.
-//func (cache *LFU[K, V]) Capacity() (capacity int) {
-//	cache.m.Lock()
-//	capacity = cache.capacity
-//	cache.m.Unlock()
-//	return
-//}
+// Remove removes the item matching the provided key from the cache, if not present is a noop.
+func (cache *LFU[K, V]) Remove(key K) {
+	cache.m.Lock()
+	if node, found := cache.entries[key]; found {
+		cache.remove(node)
+	}
+	cache.m.Unlock()
+}
+
+func (cache *LFU[K, V]) remove(node *listext.Node[entry[K, V]]) {
+	delete(cache.entries, node.Value.key)
+	node.Value.frequency.Value.entries.Remove(node)
+	if node.Value.frequency.Value.entries.Len() == 0 {
+		cache.frequencies.Remove(node.Value.frequency)
+	}
+	node.Value.frequency = nil
+}
+
+// Clear empties the cache.
+func (cache *LFU[K, V]) Clear() {
+	cache.m.Lock()
+	for _, node := range cache.entries {
+		cache.remove(node)
+	}
+	if cache.percentageFullFn != nil {
+		pf := uint8(float64(len(cache.entries)) / float64(cache.capacity) * 100.0)
+		if pf != cache.lastPercentageFull {
+			cache.lastPercentageFull = pf
+			cache.percentageFullFn(pf)
+		}
+	}
+	cache.m.Unlock()
+}
+
+// Len returns the current size of the cache.
+// The result will include items that may be expired past the max age as they are passively expired.
+func (cache *LFU[K, V]) Len() (length int) {
+	cache.m.Lock()
+	length = len(cache.entries)
+	cache.m.Unlock()
+	return
+}
+
+// Capacity returns the current configured capacity of the cache.
+func (cache *LFU[K, V]) Capacity() (capacity int) {
+	cache.m.Lock()
+	capacity = cache.capacity
+	cache.m.Unlock()
+	return
+}

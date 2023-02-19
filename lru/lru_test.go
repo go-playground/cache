@@ -77,7 +77,7 @@ func TestLRUFunctions(t *testing.T) {
 	Equal(t, percentageFull, uint8(0))
 }
 
-func BenchmarkCacheWithAllRegisteredFunctions(b *testing.B) {
+func BenchmarkLRUCacheWithAllRegisteredFunctions(b *testing.B) {
 	var hits int64 = 0
 	var misses int64 = 0
 	var evictions int64 = 0
@@ -104,7 +104,7 @@ func BenchmarkCacheWithAllRegisteredFunctions(b *testing.B) {
 	})
 }
 
-func BenchmarkCacheNoRegisteredFunctions(b *testing.B) {
+func BenchmarkLRUCacheNoRegisteredFunctions(b *testing.B) {
 
 	cache := New[string, string](100).MaxAge(time.Second).Build()
 
@@ -119,7 +119,7 @@ func BenchmarkCacheNoRegisteredFunctions(b *testing.B) {
 	})
 }
 
-func BenchmarkCacheWithAllRegisteredFunctionsNoMaxAge(b *testing.B) {
+func BenchmarkLRUCacheWithAllRegisteredFunctionsNoMaxAge(b *testing.B) {
 	var hits int64 = 0
 	var misses int64 = 0
 	var evictions int64 = 0
@@ -146,7 +146,7 @@ func BenchmarkCacheWithAllRegisteredFunctionsNoMaxAge(b *testing.B) {
 	})
 }
 
-func BenchmarkCacheNoRegisteredFunctionsNoMaxAge(b *testing.B) {
+func BenchmarkLRUCacheNoRegisteredFunctionsNoMaxAge(b *testing.B) {
 
 	cache := New[string, string](100).Build()
 
@@ -160,3 +160,5 @@ func BenchmarkCacheNoRegisteredFunctionsNoMaxAge(b *testing.B) {
 		}
 	})
 }
+
+// TODO: Do better read heavy test, which is why would be using cache in first place + try int64 maxAge for that too.

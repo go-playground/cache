@@ -152,18 +152,23 @@ func (cache *LRU[K, V]) Get(key K) (result optionext.Option[V]) {
 func (cache *LRU[K, V]) Remove(key K) {
 	cache.m.Lock()
 	if node, found := cache.nodes[key]; found {
-		delete(cache.nodes, key)
-		cache.list.Remove(node)
+		cache.remove(node)
 	}
 	cache.m.Unlock()
+}
+
+func (cache *LRU[K, V]) remove(node *listext.Node[entry[K, V]]) {
+	if node, found := cache.nodes[node.Value.key]; found {
+		delete(cache.nodes, node.Value.key)
+		cache.list.Remove(node)
+	}
 }
 
 // Clear empties the cache.
 func (cache *LRU[K, V]) Clear() {
 	cache.m.Lock()
-	cache.list.Clear()
-	for k := range cache.nodes {
-		delete(cache.nodes, k)
+	for _, node := range cache.nodes {
+		cache.remove(node)
 	}
 	if cache.percentageFullFn != nil {
 		pf := uint8(float64(cache.list.Len()) / float64(cache.capacity) * 100.0)
