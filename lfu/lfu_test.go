@@ -3,6 +3,7 @@ package lfu
 import (
 	. "github.com/go-playground/assert/v2"
 	optionext "github.com/go-playground/pkg/v5/values/option"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -204,30 +205,25 @@ func BenchmarkLFUCacheWithAllRegisteredFunctions(b *testing.B) {
 		atomic.StoreUint32(&pf, uint32(percentageFull))
 	}).Build()
 
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			cache.Set("a", "b")
-			option := cache.Get("a")
-			if option.IsNone() || option.Unwrap() != "b" {
-				panic("undefined behaviour")
-			}
+	for i := 0; i < b.N; i++ {
+		cache.Set("a", "b")
+		option := cache.Get("a")
+		if option.IsNone() || option.Unwrap() != "b" {
+			panic("undefined behaviour")
 		}
-	})
+	}
 }
 
 func BenchmarkLFUCacheNoRegisteredFunctions(b *testing.B) {
-
 	cache := New[string, string](100).MaxAge(time.Second).Build()
 
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			cache.Set("a", "b")
-			option := cache.Get("a")
-			if option.IsNone() || option.Unwrap() != "b" {
-				panic("undefined behaviour")
-			}
+	for i := 0; i < b.N; i++ {
+		cache.Set("a", "b")
+		option := cache.Get("a")
+		if option.IsNone() || option.Unwrap() != "b" {
+			panic("undefined behaviour")
 		}
-	})
+	}
 }
 
 func BenchmarkLFUCacheWithAllRegisteredFunctionsNoMaxAge(b *testing.B) {
@@ -246,28 +242,44 @@ func BenchmarkLFUCacheWithAllRegisteredFunctionsNoMaxAge(b *testing.B) {
 		atomic.StoreUint32(&pf, uint32(percentageFull))
 	}).Build()
 
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			cache.Set("a", "b")
-			option := cache.Get("a")
-			if option.IsNone() || option.Unwrap() != "b" {
-				panic("undefined behaviour")
-			}
+	for i := 0; i < b.N; i++ {
+		cache.Set("a", "b")
+		option := cache.Get("a")
+		if option.IsNone() || option.Unwrap() != "b" {
+			panic("undefined behaviour")
 		}
-	})
+	}
 }
 
 func BenchmarkLFUCacheNoRegisteredFunctionsNoMaxAge(b *testing.B) {
-
 	cache := New[string, string](100).Build()
 
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			cache.Set("a", "b")
-			option := cache.Get("a")
-			if option.IsNone() || option.Unwrap() != "b" {
-				panic("undefined behaviour")
-			}
+	for i := 0; i < b.N; i++ {
+		cache.Set("a", "b")
+		option := cache.Get("a")
+		if option.IsNone() || option.Unwrap() != "b" {
+			panic("undefined behaviour")
 		}
-	})
+	}
+}
+
+func BenchmarkLFUCacheGetsOnly(b *testing.B) {
+	cache := New[string, string](100).Build()
+	cache.Set("a", "b")
+
+	for i := 0; i < b.N; i++ {
+		option := cache.Get("a")
+		if option.IsNone() || option.Unwrap() != "b" {
+			panic("undefined behaviour")
+		}
+	}
+}
+
+func BenchmarkLFUCacheSetsOnly(b *testing.B) {
+	cache := New[string, string](100).Build()
+
+	for i := 0; i < b.N; i++ {
+		j := strconv.Itoa(i)
+		cache.Set(j, "b")
+	}
 }
