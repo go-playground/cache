@@ -168,6 +168,26 @@ func TestLFUEdgeCases(t *testing.T) {
 	Equal(t, c.frequencies.Front().Value.count, maxInt)
 }
 
+func TestLFULFU(t *testing.T) {
+	c := New[string, int](2).MaxAge(time.Hour).Build()
+	c.Set("1", 1)
+	c.Set("2", 2)
+
+	for i := 0; i < 1_000; i++ {
+		_ = c.Get("1")
+	}
+
+	for i := 0; i < 100; i++ {
+		_ = c.Get("2")
+	}
+
+	// should cause `2` to be evicted even though it;s the most recently used, it isn't the most frequently used.
+	c.Set("3", 3)
+	Equal(t, c.Get("1"), optionext.Some(1))
+	Equal(t, c.Get("2"), optionext.None[int]())
+	Equal(t, c.Get("3"), optionext.Some(3))
+}
+
 func BenchmarkLFUCacheWithAllRegisteredFunctions(b *testing.B) {
 	var hits int64 = 0
 	var misses int64 = 0
