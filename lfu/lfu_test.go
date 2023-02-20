@@ -45,6 +45,7 @@ func TestLFUMaxAge(t *testing.T) {
 	c.Set("1", 1)
 	Equal(t, c.Capacity(), 3)
 	Equal(t, c.Len(), 1)
+	time.Sleep(time.Second) // for windows :(
 	Equal(t, c.Get("1"), optionext.None[int]())
 	Equal(t, c.Len(), 0)
 	Equal(t, evictions, 1)
