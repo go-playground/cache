@@ -110,13 +110,7 @@ func (cache *Cache[K, V]) Set(key K, value V) {
 				cache.evictFn(key, entry.Value.value)
 			}
 		} else {
-			if cache.percentageFullFn != nil {
-				pf := uint8(float64(cache.list.Len()) / float64(cache.capacity) * 100.0)
-				if pf != cache.lastPercentageFull {
-					cache.lastPercentageFull = pf
-					cache.percentageFullFn(pf)
-				}
-			}
+			cache.reportPercentFull()
 		}
 	}
 	cache.m.Unlock()
@@ -171,13 +165,7 @@ func (cache *Cache[K, V]) Clear() {
 	for _, node := range cache.nodes {
 		cache.remove(node)
 	}
-	if cache.percentageFullFn != nil {
-		pf := uint8(float64(cache.list.Len()) / float64(cache.capacity) * 100.0)
-		if pf != cache.lastPercentageFull {
-			cache.lastPercentageFull = pf
-			cache.percentageFullFn(pf)
-		}
-	}
+	cache.reportPercentFull()
 	cache.m.Unlock()
 }
 
@@ -196,4 +184,14 @@ func (cache *Cache[K, V]) Capacity() (capacity int) {
 	capacity = cache.capacity
 	cache.m.Unlock()
 	return
+}
+
+func (cache *Cache[K, V]) reportPercentFull() {
+	if cache.percentageFullFn != nil {
+		pf := uint8(float64(cache.list.Len()) / float64(cache.capacity) * 100.0)
+		if pf != cache.lastPercentageFull {
+			cache.lastPercentageFull = pf
+			cache.percentageFullFn(pf)
+		}
+	}
 }
