@@ -2,6 +2,7 @@ package lru
 
 import (
 	listext "github.com/go-playground/pkg/v5/container/list"
+	timeext "github.com/go-playground/pkg/v5/time"
 	optionext "github.com/go-playground/pkg/v5/values/option"
 	"sync"
 	"time"
@@ -24,7 +25,7 @@ func New[K comparable, V any](capacity int) *builder[K, V] {
 
 // MaxAge sets the maximum age of an entry before it should be discarded; passively.
 func (b *builder[K, V]) MaxAge(maxAge time.Duration) *builder[K, V] {
-	b.lru.maxAge = maxAge
+	b.lru.maxAge = int64(maxAge)
 	return b
 }
 
@@ -65,7 +66,7 @@ func (b *builder[K, V]) Build() (lru *Cache[K, V]) {
 type entry[K comparable, V any] struct {
 	key   K
 	value V
-	ts    time.Time
+	ts    int64
 }
 
 // Cache is a configured least recently used cache ready for use.
@@ -74,7 +75,7 @@ type Cache[K comparable, V any] struct {
 	list               *listext.DoublyLinkedList[entry[K, V]]
 	nodes              map[K]*listext.Node[entry[K, V]]
 	capacity           int
-	maxAge             time.Duration
+	maxAge             int64
 	lastPercentageFull uint8
 	hitFn              func(key K, value V)
 	missFn             func(key K)
@@ -90,7 +91,7 @@ func (cache *Cache[K, V]) Set(key K, value V) {
 	if found {
 		node.Value.value = value
 		if cache.maxAge > 0 {
-			node.Value.ts = time.Now()
+			node.Value.ts = timeext.NanoTime()
 		}
 		cache.list.MoveToFront(node)
 	} else {
@@ -99,7 +100,7 @@ func (cache *Cache[K, V]) Set(key K, value V) {
 			value: value,
 		}
 		if cache.maxAge > 0 {
-			e.ts = time.Now()
+			e.ts = timeext.NanoTime()
 		}
 		cache.nodes[key] = cache.list.PushFront(e)
 		if cache.list.Len() > cache.capacity {
@@ -128,7 +129,7 @@ func (cache *Cache[K, V]) Get(key K) (result optionext.Option[V]) {
 
 	node, found := cache.nodes[key]
 	if found {
-		if cache.maxAge > 0 && time.Since(node.Value.ts) > cache.maxAge {
+		if cache.maxAge > 0 && timeext.NanoTime()-node.Value.ts > cache.maxAge {
 			delete(cache.nodes, key)
 			cache.list.Remove(node)
 			if cache.evictFn != nil {
