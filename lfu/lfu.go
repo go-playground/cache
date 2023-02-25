@@ -8,13 +8,13 @@ import (
 )
 
 type builder[K comparable, V any] struct {
-	lfu *LFU[K, V]
+	lfu *Cache[K, V]
 }
 
 // New initializes a builder to create an LFU cache.
 func New[K comparable, V any](capacity int) *builder[K, V] {
 	return &builder[K, V]{
-		lfu: &LFU[K, V]{
+		lfu: &Cache[K, V]{
 			frequencies: listext.NewDoublyLinked[frequency[K, V]](),
 			entries:     make(map[K]*listext.Node[entry[K, V]]),
 			capacity:    capacity,
@@ -56,7 +56,7 @@ func (b *builder[K, V]) PercentageFullFn(fn func(percentageFull uint8)) *builder
 }
 
 // Build finalizes configuration and returns the LFU cache for use.
-func (b *builder[K, V]) Build() (lru *LFU[K, V]) {
+func (b *builder[K, V]) Build() (lru *Cache[K, V]) {
 	lru = b.lfu
 	b.lfu = nil
 	return lru
@@ -74,8 +74,8 @@ type frequency[K comparable, V any] struct {
 	count   int
 }
 
-// LFU is a configured least frequently used cache ready for use.
-type LFU[K comparable, V any] struct {
+// Cache is a configured least frequently used cache ready for use.
+type Cache[K comparable, V any] struct {
 	m                  sync.Mutex
 	frequencies        *listext.DoublyLinkedList[frequency[K, V]]
 	entries            map[K]*listext.Node[entry[K, V]]
@@ -89,7 +89,7 @@ type LFU[K comparable, V any] struct {
 }
 
 // Set sets an item into the cache. It will replace the current entry if there is one.
-func (cache *LFU[K, V]) Set(key K, value V) {
+func (cache *Cache[K, V]) Set(key K, value V) {
 	cache.m.Lock()
 
 	node, found := cache.entries[key]
@@ -149,7 +149,7 @@ func (cache *LFU[K, V]) Set(key K, value V) {
 
 // Get attempts to find an existing cache entry by key.
 // It returns an Option you must check before using the underlying value.
-func (cache *LFU[K, V]) Get(key K) (result optionext.Option[V]) {
+func (cache *Cache[K, V]) Get(key K) (result optionext.Option[V]) {
 	cache.m.Lock()
 
 	node, found := cache.entries[key]
@@ -163,23 +163,29 @@ func (cache *LFU[K, V]) Get(key K) (result optionext.Option[V]) {
 			nextCount := node.Value.frequency.Value.count + 1
 			// super edge case, int can wrap around, if that's the case don't do anything but
 			// mark as most recently accessed, it's already in the top tier and so want to keep it
-			// around.
+			// there.
 			if nextCount <= 0 {
 				node.Value.frequency.Value.entries.MoveToFront(node)
 			} else {
 				prev := node.Value.frequency.Prev()
-				if prev == nil || prev.Value.count != nextCount {
-					prev = cache.frequencies.PushBefore(node.Value.frequency, frequency[K, V]{
-						entries: listext.NewDoublyLinked[entry[K, V]](),
-						count:   nextCount,
-					})
+				if prev == nil && node.Value.frequency.Value.entries.Len() == 1 {
+					// frequency is the head node and is the only entry, we can just increment the counter of the frequency
+					// as an early optimization.
+					node.Value.frequency.Value.count = nextCount
+				} else {
+					if prev == nil || prev.Value.count != nextCount {
+						prev = cache.frequencies.PushBefore(node.Value.frequency, frequency[K, V]{
+							entries: listext.NewDoublyLinked[entry[K, V]](),
+							count:   nextCount,
+						})
+					}
+					node.Value.frequency.Value.entries.Remove(node)
+					if node.Value.frequency.Value.entries.Len() == 0 {
+						cache.frequencies.Remove(node.Value.frequency)
+					}
+					node.Value.frequency = prev
+					prev.Value.entries.InsertAtFront(node)
 				}
-				node.Value.frequency.Value.entries.Remove(node)
-				if node.Value.frequency.Value.entries.Len() == 0 {
-					cache.frequencies.Remove(node.Value.frequency)
-				}
-				node.Value.frequency = prev
-				prev.Value.entries.InsertAtFront(node)
 			}
 			result = optionext.Some(node.Value.value)
 			if cache.hitFn != nil {
@@ -194,7 +200,7 @@ func (cache *LFU[K, V]) Get(key K) (result optionext.Option[V]) {
 }
 
 // Remove removes the item matching the provided key from the cache, if not present is a noop.
-func (cache *LFU[K, V]) Remove(key K) {
+func (cache *Cache[K, V]) Remove(key K) {
 	cache.m.Lock()
 	if node, found := cache.entries[key]; found {
 		cache.remove(node)
@@ -202,7 +208,7 @@ func (cache *LFU[K, V]) Remove(key K) {
 	cache.m.Unlock()
 }
 
-func (cache *LFU[K, V]) remove(node *listext.Node[entry[K, V]]) {
+func (cache *Cache[K, V]) remove(node *listext.Node[entry[K, V]]) {
 	delete(cache.entries, node.Value.key)
 	node.Value.frequency.Value.entries.Remove(node)
 	if node.Value.frequency.Value.entries.Len() == 0 {
@@ -212,7 +218,7 @@ func (cache *LFU[K, V]) remove(node *listext.Node[entry[K, V]]) {
 }
 
 // Clear empties the cache.
-func (cache *LFU[K, V]) Clear() {
+func (cache *Cache[K, V]) Clear() {
 	cache.m.Lock()
 	for _, node := range cache.entries {
 		cache.remove(node)
@@ -229,7 +235,7 @@ func (cache *LFU[K, V]) Clear() {
 
 // Len returns the current size of the cache.
 // The result will include items that may be expired past the max age as they are passively expired.
-func (cache *LFU[K, V]) Len() (length int) {
+func (cache *Cache[K, V]) Len() (length int) {
 	cache.m.Lock()
 	length = len(cache.entries)
 	cache.m.Unlock()
@@ -237,7 +243,7 @@ func (cache *LFU[K, V]) Len() (length int) {
 }
 
 // Capacity returns the current configured capacity of the cache.
-func (cache *LFU[K, V]) Capacity() (capacity int) {
+func (cache *Cache[K, V]) Capacity() (capacity int) {
 	cache.m.Lock()
 	capacity = cache.capacity
 	cache.m.Unlock()

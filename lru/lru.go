@@ -8,13 +8,13 @@ import (
 )
 
 type builder[K comparable, V any] struct {
-	lru *LRU[K, V]
+	lru *Cache[K, V]
 }
 
 // New initializes a builder to create an LRU cache.
 func New[K comparable, V any](capacity int) *builder[K, V] {
 	return &builder[K, V]{
-		lru: &LRU[K, V]{
+		lru: &Cache[K, V]{
 			list:     listext.NewDoublyLinked[entry[K, V]](),
 			nodes:    make(map[K]*listext.Node[entry[K, V]]),
 			capacity: capacity,
@@ -56,7 +56,7 @@ func (b *builder[K, V]) PercentageFullFn(fn func(percentageFull uint8)) *builder
 }
 
 // Build finalizes configuration and returns the LRU cache for use.
-func (b *builder[K, V]) Build() (lru *LRU[K, V]) {
+func (b *builder[K, V]) Build() (lru *Cache[K, V]) {
 	lru = b.lru
 	b.lru = nil
 	return lru
@@ -68,8 +68,8 @@ type entry[K comparable, V any] struct {
 	ts    time.Time
 }
 
-// LRU is a configured least recently used cache ready for use.
-type LRU[K comparable, V any] struct {
+// Cache is a configured least recently used cache ready for use.
+type Cache[K comparable, V any] struct {
 	m                  sync.Mutex
 	list               *listext.DoublyLinkedList[entry[K, V]]
 	nodes              map[K]*listext.Node[entry[K, V]]
@@ -83,7 +83,7 @@ type LRU[K comparable, V any] struct {
 }
 
 // Set sets an item into the cache. It will replace the current entry if there is one.
-func (cache *LRU[K, V]) Set(key K, value V) {
+func (cache *Cache[K, V]) Set(key K, value V) {
 	cache.m.Lock()
 
 	node, found := cache.nodes[key]
@@ -123,7 +123,7 @@ func (cache *LRU[K, V]) Set(key K, value V) {
 
 // Get attempts to find an existing cache entry by key.
 // It returns an Option you must check before using the underlying value.
-func (cache *LRU[K, V]) Get(key K) (result optionext.Option[V]) {
+func (cache *Cache[K, V]) Get(key K) (result optionext.Option[V]) {
 	cache.m.Lock()
 
 	node, found := cache.nodes[key]
@@ -149,7 +149,7 @@ func (cache *LRU[K, V]) Get(key K) (result optionext.Option[V]) {
 }
 
 // Remove removes the item matching the provided key from the cache, if not present is a noop.
-func (cache *LRU[K, V]) Remove(key K) {
+func (cache *Cache[K, V]) Remove(key K) {
 	cache.m.Lock()
 	if node, found := cache.nodes[key]; found {
 		cache.remove(node)
@@ -157,7 +157,7 @@ func (cache *LRU[K, V]) Remove(key K) {
 	cache.m.Unlock()
 }
 
-func (cache *LRU[K, V]) remove(node *listext.Node[entry[K, V]]) {
+func (cache *Cache[K, V]) remove(node *listext.Node[entry[K, V]]) {
 	if node, found := cache.nodes[node.Value.key]; found {
 		delete(cache.nodes, node.Value.key)
 		cache.list.Remove(node)
@@ -165,7 +165,7 @@ func (cache *LRU[K, V]) remove(node *listext.Node[entry[K, V]]) {
 }
 
 // Clear empties the cache.
-func (cache *LRU[K, V]) Clear() {
+func (cache *Cache[K, V]) Clear() {
 	cache.m.Lock()
 	for _, node := range cache.nodes {
 		cache.remove(node)
@@ -182,7 +182,7 @@ func (cache *LRU[K, V]) Clear() {
 
 // Len returns the current size of the cache.
 // The result will include items that may be expired past the max age as they are passively expired.
-func (cache *LRU[K, V]) Len() (length int) {
+func (cache *Cache[K, V]) Len() (length int) {
 	cache.m.Lock()
 	length = cache.list.Len()
 	cache.m.Unlock()
@@ -190,7 +190,7 @@ func (cache *LRU[K, V]) Len() (length int) {
 }
 
 // Capacity returns the current configured capacity of the cache.
-func (cache *LRU[K, V]) Capacity() (capacity int) {
+func (cache *Cache[K, V]) Capacity() (capacity int) {
 	cache.m.Lock()
 	capacity = cache.capacity
 	cache.m.Unlock()

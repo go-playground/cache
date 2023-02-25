@@ -174,3 +174,16 @@ func BenchmarkLRUCacheSetsOnly(b *testing.B) {
 		cache.Set(j, "b")
 	}
 }
+
+func BenchmarkLRUCacheSetGetDynamicWithEvictions(b *testing.B) {
+	cache := New[string, string](100).Build()
+
+	for i := 0; i < b.N; i++ {
+		j := strconv.Itoa(i)
+		cache.Set(j, j)
+		option := cache.Get(j)
+		if option.IsNone() || option.Unwrap() != j {
+			panic("undefined behaviour")
+		}
+	}
+}
