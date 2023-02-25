@@ -7,8 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ## [0.4.0] - 2023-02-25
-### Changed
-- Changed percentage full function to be called when changed or every 1000 accesses from the Get function.
+### Added
+- PercentageFull helper function to avoid the need to lock twice calling `Len` and `Capacity` separately.
 
 ## [0.3.0] - 2023-02-25
 ### Changed

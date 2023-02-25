@@ -11,15 +11,12 @@ import (
 
 func TestLRUPercentageFullEveryXAccesses(t *testing.T) {
 	var count int
-	c := New[string, int](3).PercentageFullFn(func(percentageFull float64) {
+	c := New[string, int](2).PercentageFullFn(func(percentageFull float64) {
 		count++
 	}).Build()
 	c.Set("a", 1)
 	Equal(t, count, 1)
-	for i := 0; i < 2000; i++ {
-		_ = c.Get("a")
-	}
-	Equal(t, count, 3)
+	Equal(t, c.PercentageFull(), 50.0)
 }
 
 func TestLRUBasics(t *testing.T) {

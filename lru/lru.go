@@ -49,8 +49,6 @@ func (b *builder[K, V]) EvictFn(fn func(key K, value V)) *builder[K, V] {
 
 // PercentageFullFn sets an optional function to call upon cache size change that will be passed the percentage full
 // as a float64.
-//
-// It will report when the value changes or every 1000 accesses.
 func (b *builder[K, V]) PercentageFullFn(fn func(percentageFull float64)) *builder[K, V] {
 	b.lru.percentageFullFn = fn
 	return b
@@ -75,7 +73,6 @@ type Cache[K comparable, V any] struct {
 	list             *listext.DoublyLinkedList[entry[K, V]]
 	nodes            map[K]*listext.Node[entry[K, V]]
 	capacity         int
-	accesses         uint16
 	maxAge           int64
 	hitFn            func(key K, value V)
 	missFn           func(key K)
@@ -139,13 +136,6 @@ func (cache *Cache[K, V]) Get(key K) (result optionext.Option[V]) {
 	} else if cache.missFn != nil {
 		cache.missFn(key)
 	}
-	if cache.percentageFullFn != nil {
-		cache.accesses++
-		if cache.accesses == 1000 {
-			cache.accesses = 0
-			cache.reportPercentFull()
-		}
-	}
 	cache.m.Unlock()
 	return
 }
@@ -193,9 +183,21 @@ func (cache *Cache[K, V]) Capacity() (capacity int) {
 	return
 }
 
+// PercentageFull is a convenience function to grab the information with one lock instead
+// of the two that would have been needed by calling `Len` and `Capacity` separately.
+func (cache *Cache[K, V]) PercentageFull() (full float64) {
+	cache.m.Lock()
+	full = cache.percentageFullNoLock()
+	cache.m.Unlock()
+	return
+}
+
+func (cache *Cache[K, V]) percentageFullNoLock() float64 {
+	return float64(cache.list.Len()) / float64(cache.capacity) * 100.0
+}
+
 func (cache *Cache[K, V]) reportPercentFull() {
 	if cache.percentageFullFn != nil {
-		pf := float64(cache.list.Len()) / float64(cache.capacity) * 100.0
-		cache.percentageFullFn(pf)
+		cache.percentageFullFn(cache.percentageFullNoLock())
 	}
 }
