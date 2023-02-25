@@ -1,6 +1,7 @@
 package lru
 
 import (
+	"context"
 	. "github.com/go-playground/assert/v2"
 	optionext "github.com/go-playground/pkg/v5/values/option"
 	"strconv"
@@ -9,21 +10,25 @@ import (
 	"time"
 )
 
-func TestLRUPercentageFullEveryXAccesses(t *testing.T) {
-	var count int
+func TestLRUPercentageFullCadence(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var count uint32
 	c := New[string, int](2).PercentageFullFn(func(percentageFull float64) {
-		count++
-	}).Build()
+		atomic.AddUint32(&count, 1)
+	}).PercentageFullReportCadence(time.Millisecond * 500).Build(ctx)
 	c.Set("a", 1)
-	Equal(t, count, 1)
-	Equal(t, c.PercentageFull(), 50.0)
+	Equal(t, atomic.LoadUint32(&count), uint32(1))
+	time.Sleep(time.Second)
+	Equal(t, atomic.LoadUint32(&count) > 1, true)
 }
 
 func TestLRUBasics(t *testing.T) {
 	evictions := 0
 	c := New[string, int](3).MaxAge(time.Hour).EvictFn(func(_ string, _ int) {
 		evictions++
-	}).Build()
+	}).Build(context.Background())
 	c.Set("1", 1)
 	c.Set("2", 2)
 	c.Set("3", 3)
@@ -51,7 +56,7 @@ func TestLRUMaxAge(t *testing.T) {
 	evictions := 0
 	c := New[string, int](3).MaxAge(time.Nanosecond).EvictFn(func(_ string, _ int) {
 		evictions++
-	}).Build()
+	}).Build(context.Background())
 	c.Set("1", 1)
 	Equal(t, c.Capacity(), 3)
 	Equal(t, c.Len(), 1)
@@ -75,7 +80,7 @@ func TestLRUFunctions(t *testing.T) {
 		}).
 		PercentageFullFn(func(pf float64) {
 			percentageFull = pf
-		}).Build()
+		}).Build(context.Background())
 	c.Set("1", 1)
 	Equal(t, percentageFull, float64(50))
 
@@ -103,7 +108,7 @@ func BenchmarkLRUCacheWithAllRegisteredFunctions(b *testing.B) {
 		atomic.AddInt64(&evictions, 1)
 	}).PercentageFullFn(func(percentageFull float64) {
 		atomic.StoreUint32(&pf, uint32(percentageFull))
-	}).Build()
+	}).PercentageFullReportCadence(time.Minute).Build(context.Background())
 
 	for i := 0; i < b.N; i++ {
 		cache.Set("a", "b")
@@ -116,7 +121,7 @@ func BenchmarkLRUCacheWithAllRegisteredFunctions(b *testing.B) {
 
 func BenchmarkLRUCacheNoRegisteredFunctions(b *testing.B) {
 
-	cache := New[string, string](100).MaxAge(time.Second).Build()
+	cache := New[string, string](100).MaxAge(time.Second).Build(context.Background())
 
 	for i := 0; i < b.N; i++ {
 		cache.Set("a", "b")
@@ -141,7 +146,7 @@ func BenchmarkLRUCacheWithAllRegisteredFunctionsNoMaxAge(b *testing.B) {
 		atomic.AddInt64(&evictions, 1)
 	}).PercentageFullFn(func(percentageFull float64) {
 		atomic.StoreUint32(&pf, uint32(percentageFull))
-	}).Build()
+	}).PercentageFullReportCadence(time.Minute).Build(context.Background())
 
 	for i := 0; i < b.N; i++ {
 		cache.Set("a", "b")
@@ -153,7 +158,7 @@ func BenchmarkLRUCacheWithAllRegisteredFunctionsNoMaxAge(b *testing.B) {
 }
 
 func BenchmarkLRUCacheNoRegisteredFunctionsNoMaxAge(b *testing.B) {
-	cache := New[string, string](100).Build()
+	cache := New[string, string](100).Build(context.Background())
 
 	for i := 0; i < b.N; i++ {
 		cache.Set("a", "b")
@@ -165,7 +170,7 @@ func BenchmarkLRUCacheNoRegisteredFunctionsNoMaxAge(b *testing.B) {
 }
 
 func BenchmarkLRUCacheGetsOnly(b *testing.B) {
-	cache := New[string, string](100).Build()
+	cache := New[string, string](100).Build(context.Background())
 	cache.Set("a", "b")
 
 	for i := 0; i < b.N; i++ {
@@ -177,7 +182,7 @@ func BenchmarkLRUCacheGetsOnly(b *testing.B) {
 }
 
 func BenchmarkLRUCacheSetsOnly(b *testing.B) {
-	cache := New[string, string](100).Build()
+	cache := New[string, string](100).Build(context.Background())
 
 	for i := 0; i < b.N; i++ {
 		j := strconv.Itoa(i)
@@ -186,7 +191,7 @@ func BenchmarkLRUCacheSetsOnly(b *testing.B) {
 }
 
 func BenchmarkLRUCacheSetGetDynamicWithEvictions(b *testing.B) {
-	cache := New[string, string](100).Build()
+	cache := New[string, string](100).Build(context.Background())
 
 	for i := 0; i < b.N; i++ {
 		j := strconv.Itoa(i)
@@ -199,7 +204,7 @@ func BenchmarkLRUCacheSetGetDynamicWithEvictions(b *testing.B) {
 }
 
 func BenchmarkLRUCacheGetSetParallel(b *testing.B) {
-	cache := New[string, string](100).Build()
+	cache := New[string, string](100).Build(context.Background())
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			cache.Set("a", "b")

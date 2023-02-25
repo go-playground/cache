@@ -1,6 +1,7 @@
 package lru
 
 import (
+	"context"
 	listext "github.com/go-playground/pkg/v5/container/list"
 	timeext "github.com/go-playground/pkg/v5/time"
 	optionext "github.com/go-playground/pkg/v5/values/option"
@@ -9,7 +10,8 @@ import (
 )
 
 type builder[K comparable, V any] struct {
-	lru *Cache[K, V]
+	lru                   *Cache[K, V]
+	percentageFullCadence time.Duration
 }
 
 // New initializes a builder to create an LRU cache.
@@ -54,10 +56,40 @@ func (b *builder[K, V]) PercentageFullFn(fn func(percentageFull float64)) *build
 	return b
 }
 
+// PercentageFullReportCadence accepts a duration in which will call the `PercentageFullFn`, if set.
+//
+// This is useful for when the cache percentage full is not changing due to being full, but still need periodic
+// reporting for metrics.
+func (b *builder[K, V]) PercentageFullReportCadence(cadence time.Duration) *builder[K, V] {
+	b.percentageFullCadence = cadence
+	return b
+}
+
 // Build finalizes configuration and returns the LRU cache for use.
-func (b *builder[K, V]) Build() (lru *Cache[K, V]) {
+//
+// The provided context is used for graceful shutdown of goroutines, such as percentage full reporting in background
+// goroutine and alike.
+func (b *builder[K, V]) Build(ctx context.Context) (lru *Cache[K, V]) {
 	lru = b.lru
 	b.lru = nil
+
+	if lru.percentageFullFn != nil && b.percentageFullCadence != 0 {
+		go func(cadence time.Duration) {
+			var ticker = time.NewTicker(b.percentageFullCadence)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					lru.m.Lock()
+					lru.reportPercentFull()
+					lru.m.Unlock()
+				}
+			}
+		}(b.percentageFullCadence)
+	}
 	return lru
 }
 
@@ -179,15 +211,6 @@ func (cache *Cache[K, V]) Len() (length int) {
 func (cache *Cache[K, V]) Capacity() (capacity int) {
 	cache.m.Lock()
 	capacity = cache.capacity
-	cache.m.Unlock()
-	return
-}
-
-// PercentageFull is a convenience function to grab the information with one lock instead
-// of the two that would have been needed by calling `Len` and `Capacity` separately.
-func (cache *Cache[K, V]) PercentageFull() (full float64) {
-	cache.m.Lock()
-	full = cache.percentageFullNoLock()
 	cache.m.Unlock()
 	return
 }
