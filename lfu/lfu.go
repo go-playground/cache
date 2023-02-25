@@ -48,10 +48,8 @@ func (b *builder[K, V]) EvictFn(fn func(key K, value V)) *builder[K, V] {
 }
 
 // PercentageFullFn sets an optional function to call upon cache size change that will be passed the percentage full
-// as an integer with no decimals.
-//
-// It will only be called if the percentage changes value from previous.
-func (b *builder[K, V]) PercentageFullFn(fn func(percentageFull uint8)) *builder[K, V] {
+// as a float64.
+func (b *builder[K, V]) PercentageFullFn(fn func(percentageFull float64)) *builder[K, V] {
 	b.lfu.percentageFullFn = fn
 	return b
 }
@@ -77,16 +75,15 @@ type frequency[K comparable, V any] struct {
 
 // Cache is a configured least frequently used cache ready for use.
 type Cache[K comparable, V any] struct {
-	m                  sync.Mutex
-	frequencies        *listext.DoublyLinkedList[frequency[K, V]]
-	entries            map[K]*listext.Node[entry[K, V]]
-	capacity           int
-	maxAge             int64
-	lastPercentageFull uint8
-	hitFn              func(key K, value V)
-	missFn             func(key K)
-	evictFn            func(key K, value V)
-	percentageFullFn   func(percentFull uint8)
+	m                sync.Mutex
+	frequencies      *listext.DoublyLinkedList[frequency[K, V]]
+	entries          map[K]*listext.Node[entry[K, V]]
+	capacity         int
+	maxAge           int64
+	hitFn            func(key K, value V)
+	missFn           func(key K)
+	evictFn          func(key K, value V)
+	percentageFullFn func(percentFull float64)
 }
 
 // Set sets an item into the cache. It will replace the current entry if there is one.
@@ -241,10 +238,7 @@ func (cache *Cache[K, V]) Capacity() (capacity int) {
 
 func (cache *Cache[K, V]) reportPercentFull() {
 	if cache.percentageFullFn != nil {
-		pf := uint8(float64(len(cache.entries)) / float64(cache.capacity) * 100.0)
-		if pf != cache.lastPercentageFull {
-			cache.lastPercentageFull = pf
-			cache.percentageFullFn(pf)
-		}
+		pf := float64(len(cache.entries)) / float64(cache.capacity) * 100.0
+		cache.percentageFullFn(pf)
 	}
 }
