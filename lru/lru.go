@@ -183,9 +183,21 @@ func (cache *Cache[K, V]) Capacity() (capacity int) {
 	return
 }
 
+// PercentageFull is a convenience function to grab the information with one lock instead
+// of the two that would have been needed by calling `Len` and `Capacity` separately.
+func (cache *Cache[K, V]) PercentageFull() (full float64) {
+	cache.m.Lock()
+	full = cache.percentageFullNoLock()
+	cache.m.Unlock()
+	return
+}
+
+func (cache *Cache[K, V]) percentageFullNoLock() float64 {
+	return float64(cache.list.Len()) / float64(cache.capacity) * 100.0
+}
+
 func (cache *Cache[K, V]) reportPercentFull() {
 	if cache.percentageFullFn != nil {
-		pf := float64(cache.list.Len()) / float64(cache.capacity) * 100.0
-		cache.percentageFullFn(pf)
+		cache.percentageFullFn(cache.percentageFullNoLock())
 	}
 }
