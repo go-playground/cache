@@ -9,6 +9,19 @@ import (
 	"time"
 )
 
+func TestLRUPercentageFullEveryXAccesses(t *testing.T) {
+	var count int
+	c := New[string, int](3).PercentageFullFn(func(percentageFull float64) {
+		count++
+	}).Build()
+	c.Set("a", 1)
+	Equal(t, count, 1)
+	for i := 0; i < 2000; i++ {
+		_ = c.Get("a")
+	}
+	Equal(t, count, 3)
+}
+
 func TestLRUBasics(t *testing.T) {
 	evictions := 0
 	c := New[string, int](3).MaxAge(time.Hour).EvictFn(func(_ string, _ int) {

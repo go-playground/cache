@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2023-02-25
+### Changed
+- Changed percentage full function to be called when changed or every 1000 accesses from the Get function.
+
 ## [0.3.0] - 2023-02-25
 ### Changed
 - Changed percentage full function to be called all the time and uses a float64 instead of uint8. We were already having to cast to float64 for the math so might as well simply use it.
@@ -22,7 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - LRU & LFU cache implementations backed by a generic linked list.
 
-[Unreleased]: https://github.com/go-playground/cache/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/go-playground/cache/compare/v0.4.0...HEAD
+[0.3.0]: https://github.com/go-playground/cache/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/go-playground/cache/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/go-playground/cache/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/go-playground/cache/commit/v0.1.0
