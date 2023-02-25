@@ -54,7 +54,7 @@ func TestLRUMaxAge(t *testing.T) {
 func TestLRUFunctions(t *testing.T) {
 	hits := 0
 	misses := 0
-	percentageFull := uint8(0)
+	percentageFull := float64(0)
 
 	c := New[string, int](2).
 		HitFn(func(_ string, _ int) {
@@ -63,11 +63,11 @@ func TestLRUFunctions(t *testing.T) {
 		MissFn(func(_ string) {
 			misses++
 		}).
-		PercentageFullFn(func(pf uint8) {
+		PercentageFullFn(func(pf float64) {
 			percentageFull = pf
 		}).Build()
 	c.Set("1", 1)
-	Equal(t, percentageFull, uint8(50))
+	Equal(t, percentageFull, float64(50))
 
 	_ = c.Get("1")
 	Equal(t, hits, 1)
@@ -76,7 +76,7 @@ func TestLRUFunctions(t *testing.T) {
 	Equal(t, misses, 1)
 
 	c.Clear()
-	Equal(t, percentageFull, uint8(0))
+	Equal(t, percentageFull, float64(0))
 }
 
 func BenchmarkLRUCacheWithAllRegisteredFunctions(b *testing.B) {
@@ -91,7 +91,7 @@ func BenchmarkLRUCacheWithAllRegisteredFunctions(b *testing.B) {
 		atomic.AddInt64(&misses, 1)
 	}).EvictFn(func(_ string, _ string) {
 		atomic.AddInt64(&evictions, 1)
-	}).PercentageFullFn(func(percentageFull uint8) {
+	}).PercentageFullFn(func(percentageFull float64) {
 		atomic.StoreUint32(&pf, uint32(percentageFull))
 	}).Build()
 
@@ -129,7 +129,7 @@ func BenchmarkLRUCacheWithAllRegisteredFunctionsNoMaxAge(b *testing.B) {
 		atomic.AddInt64(&misses, 1)
 	}).EvictFn(func(_ string, _ string) {
 		atomic.AddInt64(&evictions, 1)
-	}).PercentageFullFn(func(percentageFull uint8) {
+	}).PercentageFullFn(func(percentageFull float64) {
 		atomic.StoreUint32(&pf, uint32(percentageFull))
 	}).Build()
 
