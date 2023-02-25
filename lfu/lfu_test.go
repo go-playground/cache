@@ -297,3 +297,16 @@ func BenchmarkLFUCacheSetGetDynamicWithEvictions(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkLFUCacheGetSetParallel(b *testing.B) {
+	cache := New[string, string](100).Build()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			cache.Set("a", "b")
+			option := cache.Get("a")
+			if option.IsNone() || option.Unwrap() != "b" {
+				panic("undefined behaviour")
+			}
+		}
+	})
+}
