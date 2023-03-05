@@ -20,7 +20,7 @@ func New[K comparable, V any](capacity int) *builder[K, V] {
 		lru: &Cache[K, V]{
 			list:  listext.NewDoublyLinked[entry[K, V]](),
 			nodes: make(map[K]*listext.Node[entry[K, V]]),
-			stats: Stats{capacity: capacity},
+			stats: Stats{Capacity: capacity},
 		},
 	}
 }
@@ -75,8 +75,8 @@ func (b *builder[K, V]) Build(ctx context.Context) (lru *Cache[K, V]) {
 
 // Stats represents the cache statistics.
 type Stats struct {
-	capacity, len                       int
-	hits, misses, evictions, gets, sets uint
+	Capacity, Len                       int
+	Hits, Misses, Evictions, Gets, Sets uint
 }
 
 type entry[K comparable, V any] struct {
@@ -98,7 +98,7 @@ type Cache[K comparable, V any] struct {
 // Set sets an item into the cache. It will replace the current entry if there is one.
 func (cache *Cache[K, V]) Set(key K, value V) {
 	cache.m.Lock()
-	cache.stats.sets++
+	cache.stats.Sets++
 
 	node, found := cache.nodes[key]
 	if found {
@@ -116,10 +116,10 @@ func (cache *Cache[K, V]) Set(key K, value V) {
 			e.ts = timeext.NanoTime()
 		}
 		cache.nodes[key] = cache.list.PushFront(e)
-		if cache.list.Len() > cache.stats.capacity {
+		if cache.list.Len() > cache.stats.Capacity {
 			entry := cache.list.PopBack()
 			delete(cache.nodes, entry.Value.key)
-			cache.stats.evictions++
+			cache.stats.Evictions++
 		}
 	}
 	cache.m.Unlock()
@@ -129,21 +129,21 @@ func (cache *Cache[K, V]) Set(key K, value V) {
 // It returns an Option you must check before using the underlying value.
 func (cache *Cache[K, V]) Get(key K) (result optionext.Option[V]) {
 	cache.m.Lock()
-	cache.stats.gets++
+	cache.stats.Gets++
 
 	node, found := cache.nodes[key]
 	if found {
 		if cache.maxAge > 0 && timeext.NanoTime()-node.Value.ts > cache.maxAge {
 			delete(cache.nodes, key)
 			cache.list.Remove(node)
-			cache.stats.evictions++
+			cache.stats.Evictions++
 		} else {
 			cache.list.MoveToFront(node)
 			result = optionext.Some(node.Value.value)
-			cache.stats.hits++
+			cache.stats.Hits++
 		}
 	} else {
-		cache.stats.misses++
+		cache.stats.Misses++
 	}
 	cache.m.Unlock()
 	return
@@ -177,11 +177,11 @@ func (cache *Cache[K, V]) Clear() {
 // statsNoLock returns the stats and reset values
 func (cache *Cache[K, V]) statsNoLock() (stats Stats) {
 	stats = cache.stats
-	stats.len = cache.list.Len()
-	cache.stats.hits = 0
-	cache.stats.misses = 0
-	cache.stats.evictions = 0
-	cache.stats.gets = 0
-	cache.stats.sets = 0
+	stats.Len = cache.list.Len()
+	cache.stats.Hits = 0
+	cache.stats.Misses = 0
+	cache.stats.Evictions = 0
+	cache.stats.Gets = 0
+	cache.stats.Sets = 0
 	return
 }
