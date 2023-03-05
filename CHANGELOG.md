@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2023-03-05
+### Removed
+- Previous Hit, Miss, Eviction & PercentageFull functions.
+- Capacity & Len functions to reduce libraries surface area further.
+
+### Added
+- Builder `Stats` function to allow basic statistical reporting.
+
 ## [0.5.0] - 2023-02-25
 ### Removed
 - PercentageFull helper function.
@@ -33,7 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - LRU & LFU cache implementations backed by a generic linked list.
 
-[Unreleased]: https://github.com/go-playground/cache/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/go-playground/cache/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/go-playground/cache/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/go-playground/cache/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/go-playground/cache/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/go-playground/cache/compare/v0.2.0...v0.3.0

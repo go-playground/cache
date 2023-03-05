@@ -5,38 +5,48 @@ import (
 	. "github.com/go-playground/assert/v2"
 	optionext "github.com/go-playground/pkg/v5/values/option"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-func TestLFUPercentageFullCadence(t *testing.T) {
+func TestLFUStatsCadence(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var count uint32
-	c := New[string, int](2).PercentageFullFn(func(percentageFull float64) {
-		atomic.AddUint32(&count, 1)
-	}).PercentageFullReportCadence(time.Millisecond * 500).Build(ctx)
+	var stats atomic.Value
+	var store sync.Once
+
+	c := New[string, int](2).Stats(time.Millisecond*750, func(s Stats) {
+		store.Do(func() {
+			stats.Store(s)
+		})
+	}).Build(ctx)
 	c.Set("a", 1)
-	Equal(t, atomic.LoadUint32(&count), uint32(1))
+	_ = c.Get("a")
+	_ = c.Get("b")
 	time.Sleep(time.Second)
-	Equal(t, atomic.LoadUint32(&count) > 1, true)
+	s := stats.Load().(Stats)
+	Equal(t, s.hits, uint(1))
+	Equal(t, s.misses, uint(1))
+	Equal(t, s.gets, uint(2))
+	Equal(t, s.sets, uint(1))
+	Equal(t, s.evictions, uint(0))
+	Equal(t, s.capacity, 2)
+	Equal(t, s.len, 1)
 }
 
 func TestLFUBasics(t *testing.T) {
-	evictions := 0
-	c := New[string, int](3).MaxAge(time.Hour).EvictFn(func(_ string, _ int) {
-		evictions++
-	}).Build(context.Background())
+	c := New[string, int](3).MaxAge(time.Hour).Build(context.Background())
 	c.Set("1", 1)
 	c.Set("2", 2)
 	c.Set("3", 3)
 	c.Set("1", 1) // resetting, not a mistake
 	c.Set("4", 4)
-	Equal(t, evictions, 1)
-	Equal(t, c.Capacity(), 3)
-	Equal(t, c.Len(), 3)
+	Equal(t, c.stats.evictions, uint(1))
+	Equal(t, c.stats.capacity, 3)
+	Equal(t, len(c.entries), 3)
 	Equal(t, c.Get("1"), optionext.Some(1))
 	Equal(t, c.Get("2"), optionext.None[int]())
 	Equal(t, c.Get("3"), optionext.Some(3))
@@ -48,50 +58,19 @@ func TestLFUBasics(t *testing.T) {
 
 	// test clear
 	c.Clear()
-	Equal(t, c.Capacity(), 3)
-	Equal(t, c.Len(), 0)
+	Equal(t, c.stats.capacity, 3)
+	Equal(t, len(c.entries), 0)
 }
 
 func TestLFUMaxAge(t *testing.T) {
-	evictions := 0
-	c := New[string, int](3).MaxAge(time.Nanosecond).EvictFn(func(_ string, _ int) {
-		evictions++
-	}).Build(context.Background())
+	c := New[string, int](3).MaxAge(time.Nanosecond).Build(context.Background())
 	c.Set("1", 1)
-	Equal(t, c.Capacity(), 3)
-	Equal(t, c.Len(), 1)
+	Equal(t, c.stats.capacity, 3)
+	Equal(t, len(c.entries), 1)
 	time.Sleep(time.Second) // for windows :(
 	Equal(t, c.Get("1"), optionext.None[int]())
-	Equal(t, c.Len(), 0)
-	Equal(t, evictions, 1)
-}
-
-func TestLFUFunctions(t *testing.T) {
-	hits := 0
-	misses := 0
-	percentageFull := float64(0)
-
-	c := New[string, int](2).
-		HitFn(func(_ string, _ int) {
-			hits++
-		}).
-		MissFn(func(_ string) {
-			misses++
-		}).
-		PercentageFullFn(func(pf float64) {
-			percentageFull = pf
-		}).Build(context.Background())
-	c.Set("1", 1)
-	Equal(t, percentageFull, float64(50))
-
-	_ = c.Get("1")
-	Equal(t, hits, 1)
-
-	_ = c.Get("2")
-	Equal(t, misses, 1)
-
-	c.Clear()
-	Equal(t, percentageFull, float64(0))
+	Equal(t, len(c.entries), 0)
+	Equal(t, c.stats.evictions, uint(1))
 }
 
 func TestLFUEdgeFrequencySplitAndRecombine(t *testing.T) {
@@ -112,8 +91,8 @@ func TestLFUEdgeFrequencySplitAndRecombine(t *testing.T) {
 
 	// test clear
 	c.Clear()
-	Equal(t, c.Capacity(), 2)
-	Equal(t, c.Len(), 0)
+	Equal(t, c.stats.capacity, 2)
+	Equal(t, len(c.entries), 0)
 }
 
 func TestLFUEdgeCases(t *testing.T) {
@@ -168,8 +147,8 @@ func TestLFUEdgeCases(t *testing.T) {
 
 	// test clear
 	c.Clear()
-	Equal(t, c.Capacity(), 2)
-	Equal(t, c.Len(), 0)
+	Equal(t, c.stats.capacity, 2)
+	Equal(t, len(c.entries), 0)
 
 	// Test when frequency count goes beyond int max value
 	// we don't want to place it back to the beginning, leave it as the head
@@ -206,20 +185,11 @@ func TestLFULFU(t *testing.T) {
 }
 
 func BenchmarkLFUCacheWithAllRegisteredFunctions(b *testing.B) {
-	var hits int64 = 0
-	var misses int64 = 0
-	var evictions int64 = 0
-	var pf uint32 = 0
+	var stats atomic.Value
 
-	cache := New[string, string](100).MaxAge(time.Second).HitFn(func(_ string, _ string) {
-		atomic.AddInt64(&hits, 1)
-	}).MissFn(func(_ string) {
-		atomic.AddInt64(&misses, 1)
-	}).EvictFn(func(_ string, _ string) {
-		atomic.AddInt64(&evictions, 1)
-	}).PercentageFullFn(func(percentageFull float64) {
-		atomic.StoreUint32(&pf, uint32(percentageFull))
-	}).PercentageFullReportCadence(time.Minute).Build(context.Background())
+	cache := New[string, string](100).MaxAge(time.Second).Stats(time.Second, func(s Stats) {
+		stats.Store(s)
+	}).Build(context.Background())
 
 	for i := 0; i < b.N; i++ {
 		cache.Set("a", "b")
@@ -243,20 +213,11 @@ func BenchmarkLFUCacheNoRegisteredFunctions(b *testing.B) {
 }
 
 func BenchmarkLFUCacheWithAllRegisteredFunctionsNoMaxAge(b *testing.B) {
-	var hits int64 = 0
-	var misses int64 = 0
-	var evictions int64 = 0
-	var pf uint32 = 0
+	var stats atomic.Value
 
-	cache := New[string, string](100).HitFn(func(_ string, _ string) {
-		atomic.AddInt64(&hits, 1)
-	}).MissFn(func(_ string) {
-		atomic.AddInt64(&misses, 1)
-	}).EvictFn(func(_ string, _ string) {
-		atomic.AddInt64(&evictions, 1)
-	}).PercentageFullFn(func(percentageFull float64) {
-		atomic.StoreUint32(&pf, uint32(percentageFull))
-	}).PercentageFullReportCadence(time.Minute).Build(context.Background())
+	cache := New[string, string](100).Stats(time.Second, func(s Stats) {
+		stats.Store(s)
+	}).Build(context.Background())
 
 	for i := 0; i < b.N; i++ {
 		cache.Set("a", "b")

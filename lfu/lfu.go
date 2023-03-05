@@ -10,8 +10,8 @@ import (
 )
 
 type builder[K comparable, V any] struct {
-	lfu                   *Cache[K, V]
-	percentageFullCadence time.Duration
+	lfu          *Cache[K, V]
+	statsCadence time.Duration
 }
 
 // New initializes a builder to create an LFU cache.
@@ -20,7 +20,7 @@ func New[K comparable, V any](capacity int) *builder[K, V] {
 		lfu: &Cache[K, V]{
 			frequencies: listext.NewDoublyLinked[frequency[K, V]](),
 			entries:     make(map[K]*listext.Node[entry[K, V]]),
-			capacity:    capacity,
+			stats:       Stats{capacity: capacity},
 		},
 	}
 }
@@ -31,51 +31,30 @@ func (b *builder[K, V]) MaxAge(maxAge time.Duration) *builder[K, V] {
 	return b
 }
 
-// HitFn sets an optional function to call upon cache hit.
-func (b *builder[K, V]) HitFn(fn func(key K, value V)) *builder[K, V] {
-	b.lfu.hitFn = fn
-	return b
-}
-
-// MissFn sets an optional function to call upon cache miss.
-func (b *builder[K, V]) MissFn(fn func(key K)) *builder[K, V] {
-	b.lfu.missFn = fn
-	return b
-}
-
-// EvictFn sets an optional function to call upon cache eviction.
-func (b *builder[K, V]) EvictFn(fn func(key K, value V)) *builder[K, V] {
-	b.lfu.evictFn = fn
-	return b
-}
-
-// PercentageFullFn sets an optional function to call upon cache size change that will be passed the percentage full
-// as a float64.
-func (b *builder[K, V]) PercentageFullFn(fn func(percentageFull float64)) *builder[K, V] {
-	b.lfu.percentageFullFn = fn
-	return b
-}
-
-// PercentageFullReportCadence accepts a duration in which will call the `PercentageFullFn`, if set.
+// Stats enables you to register a stats function that will be called periodically using the supplied duration.
 //
-// This is useful for when the cache percentage full is not changing due to being full, but still need periodic
-// reporting for metrics.
-func (b *builder[K, V]) PercentageFullReportCadence(cadence time.Duration) *builder[K, V] {
-	b.percentageFullCadence = cadence
+// The Stats sent to the function will be the delta since last called.
+// NOTE: In order to keep the cache blocked for as little time as possible the function call is not guaranteed to be
+//
+//	thread safe and is called outside of the transaction lock.
+func (b *builder[K, V]) Stats(cadence time.Duration, fn func(stats Stats)) *builder[K, V] {
+	b.statsCadence = cadence
+	b.lfu.statsFn = fn
 	return b
 }
 
 // Build finalizes configuration and returns the LFU cache for use.
 //
-// The provided context is used for graceful shutdown of goroutines, such as percentage full reporting in background
+// The provided context is used for graceful shutdown of goroutines, such as stats reporting in background
 // goroutine and alike.
-func (b *builder[K, V]) Build(ctx context.Context) (lru *Cache[K, V]) {
-	lru = b.lfu
+func (b *builder[K, V]) Build(ctx context.Context) (lfu *Cache[K, V]) {
+	lfu = b.lfu
 	b.lfu = nil
 
-	if lru.percentageFullFn != nil && b.percentageFullCadence != 0 {
-		go func(cadence time.Duration) {
-			var ticker = time.NewTicker(b.percentageFullCadence)
+	if lfu.statsFn != nil && b.statsCadence != 0 {
+		go func(ctx context.Context, cadence time.Duration) {
+
+			var ticker = time.NewTicker(b.statsCadence)
 			defer ticker.Stop()
 
 			for {
@@ -83,14 +62,21 @@ func (b *builder[K, V]) Build(ctx context.Context) (lru *Cache[K, V]) {
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
-					lru.m.Lock()
-					lru.reportPercentFull()
-					lru.m.Unlock()
+					lfu.m.Lock()
+					s := lfu.statsNoLock()
+					lfu.m.Unlock()
+					lfu.statsFn(s)
 				}
 			}
-		}(b.percentageFullCadence)
+		}(ctx, b.statsCadence)
 	}
-	return lru
+	return lfu
+}
+
+// Stats represents the cache statistics.
+type Stats struct {
+	capacity, len                       int
+	hits, misses, evictions, gets, sets uint
 }
 
 type entry[K comparable, V any] struct {
@@ -107,20 +93,18 @@ type frequency[K comparable, V any] struct {
 
 // Cache is a configured least frequently used cache ready for use.
 type Cache[K comparable, V any] struct {
-	m                sync.Mutex
-	frequencies      *listext.DoublyLinkedList[frequency[K, V]]
-	entries          map[K]*listext.Node[entry[K, V]]
-	capacity         int
-	maxAge           int64
-	hitFn            func(key K, value V)
-	missFn           func(key K)
-	evictFn          func(key K, value V)
-	percentageFullFn func(percentFull float64)
+	m           sync.Mutex
+	frequencies *listext.DoublyLinkedList[frequency[K, V]]
+	entries     map[K]*listext.Node[entry[K, V]]
+	maxAge      int64
+	stats       Stats
+	statsFn     func(Stats)
 }
 
 // Set sets an item into the cache. It will replace the current entry if there is one.
 func (cache *Cache[K, V]) Set(key K, value V) {
 	cache.m.Lock()
+	cache.stats.sets++
 
 	node, found := cache.entries[key]
 	if found {
@@ -148,7 +132,7 @@ func (cache *Cache[K, V]) Set(key K, value V) {
 			e.ts = timeext.NanoTime()
 		}
 		cache.entries[key] = freq.Value.entries.PushFront(e)
-		if len(cache.entries) > cache.capacity {
+		if len(cache.entries) > cache.stats.capacity {
 			// if we just added the back frequency node
 			if freq.Value.count == 1 && freq.Value.entries.Len() == 1 {
 				freq = freq.Prev()
@@ -160,12 +144,8 @@ func (cache *Cache[K, V]) Set(key K, value V) {
 				if freq.Value.entries.Len() == 0 {
 					cache.frequencies.Remove(freq)
 				}
-				if cache.evictFn != nil {
-					cache.evictFn(key, ent.Value.value)
-				}
+				cache.stats.evictions++
 			}
-		} else {
-			cache.reportPercentFull()
 		}
 	}
 	cache.m.Unlock()
@@ -175,15 +155,15 @@ func (cache *Cache[K, V]) Set(key K, value V) {
 // It returns an Option you must check before using the underlying value.
 func (cache *Cache[K, V]) Get(key K) (result optionext.Option[V]) {
 	cache.m.Lock()
+	cache.stats.gets++
 
 	node, found := cache.entries[key]
 	if found {
 		if cache.maxAge > 0 && timeext.NanoTime()-node.Value.ts > cache.maxAge {
 			cache.remove(node)
-			if cache.evictFn != nil {
-				cache.evictFn(key, node.Value.value)
-			}
+			cache.stats.evictions++
 		} else {
+			cache.stats.hits++
 			nextCount := node.Value.frequency.Value.count + 1
 			// super edge case, int can wrap around, if that's the case don't do anything but
 			// mark as most recently accessed, it's already in the top tier and so want to keep it
@@ -212,12 +192,9 @@ func (cache *Cache[K, V]) Get(key K) (result optionext.Option[V]) {
 				}
 			}
 			result = optionext.Some(node.Value.value)
-			if cache.hitFn != nil {
-				cache.hitFn(key, node.Value.value)
-			}
 		}
-	} else if cache.missFn != nil {
-		cache.missFn(key)
+	} else {
+		cache.stats.misses++
 	}
 	cache.m.Unlock()
 	return
@@ -247,33 +224,17 @@ func (cache *Cache[K, V]) Clear() {
 	for _, node := range cache.entries {
 		cache.remove(node)
 	}
-	cache.reportPercentFull()
 	cache.m.Unlock()
 }
 
-// Len returns the current size of the cache.
-// The result will include items that may be expired past the max age as they are passively expired.
-func (cache *Cache[K, V]) Len() (length int) {
-	cache.m.Lock()
-	length = len(cache.entries)
-	cache.m.Unlock()
+// statsNoLock returns the stats and reset values
+func (cache *Cache[K, V]) statsNoLock() (stats Stats) {
+	stats = cache.stats
+	stats.len = len(cache.entries)
+	cache.stats.hits = 0
+	cache.stats.misses = 0
+	cache.stats.evictions = 0
+	cache.stats.gets = 0
+	cache.stats.sets = 0
 	return
-}
-
-// Capacity returns the current configured capacity of the cache.
-func (cache *Cache[K, V]) Capacity() (capacity int) {
-	cache.m.Lock()
-	capacity = cache.capacity
-	cache.m.Unlock()
-	return
-}
-
-func (cache *Cache[K, V]) percentageFullNoLock() float64 {
-	return float64(len(cache.entries)) / float64(cache.capacity) * 100.0
-}
-
-func (cache *Cache[K, V]) reportPercentFull() {
-	if cache.percentageFullFn != nil {
-		cache.percentageFullFn(cache.percentageFullNoLock())
-	}
 }
