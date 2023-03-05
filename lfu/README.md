@@ -15,15 +15,19 @@ Both above will prevent the most frequently use data from flapping in and out of
 package main
 
 import (
+	"context"
 	"fmt"
 	"github.com/go-playground/cache/lfu"
 	"time"
 )
 
 func main() {
-	cache := lfu.New[string, string](100).MaxAge(time.Hour).HitFn(func(key string, value string) {
-		fmt.Printf("Hit Key: %s Value %s\n", key, value)
-	}).Build()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cache := lfu.New[string, string](100).MaxAge(time.Hour).Stats(time.Minute, func(stats lfu.Stats) {
+		fmt.Printf("Stats: %#v\n", stats)
+	}).Build(ctx)
 	cache.Set("a", "b")
 	cache.Set("c", "d")
 
@@ -33,5 +37,4 @@ func main() {
 	}
 	fmt.Println("result:", option.Unwrap())
 }
-
 ```
