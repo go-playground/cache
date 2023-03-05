@@ -20,7 +20,7 @@ func New[K comparable, V any](capacity int) *builder[K, V] {
 		lfu: &Cache[K, V]{
 			frequencies: listext.NewDoublyLinked[frequency[K, V]](),
 			entries:     make(map[K]*listext.Node[entry[K, V]]),
-			stats:       Stats{capacity: capacity},
+			stats:       Stats{Capacity: capacity},
 		},
 	}
 }
@@ -75,8 +75,8 @@ func (b *builder[K, V]) Build(ctx context.Context) (lfu *Cache[K, V]) {
 
 // Stats represents the cache statistics.
 type Stats struct {
-	capacity, len                       int
-	hits, misses, evictions, gets, sets uint
+	Capacity, Len                       int
+	Hits, Misses, Evictions, Gets, Sets uint
 }
 
 type entry[K comparable, V any] struct {
@@ -104,7 +104,7 @@ type Cache[K comparable, V any] struct {
 // Set sets an item into the cache. It will replace the current entry if there is one.
 func (cache *Cache[K, V]) Set(key K, value V) {
 	cache.m.Lock()
-	cache.stats.sets++
+	cache.stats.Sets++
 
 	node, found := cache.entries[key]
 	if found {
@@ -132,7 +132,7 @@ func (cache *Cache[K, V]) Set(key K, value V) {
 			e.ts = timeext.NanoTime()
 		}
 		cache.entries[key] = freq.Value.entries.PushFront(e)
-		if len(cache.entries) > cache.stats.capacity {
+		if len(cache.entries) > cache.stats.Capacity {
 			// if we just added the back frequency node
 			if freq.Value.count == 1 && freq.Value.entries.Len() == 1 {
 				freq = freq.Prev()
@@ -144,7 +144,7 @@ func (cache *Cache[K, V]) Set(key K, value V) {
 				if freq.Value.entries.Len() == 0 {
 					cache.frequencies.Remove(freq)
 				}
-				cache.stats.evictions++
+				cache.stats.Evictions++
 			}
 		}
 	}
@@ -155,15 +155,15 @@ func (cache *Cache[K, V]) Set(key K, value V) {
 // It returns an Option you must check before using the underlying value.
 func (cache *Cache[K, V]) Get(key K) (result optionext.Option[V]) {
 	cache.m.Lock()
-	cache.stats.gets++
+	cache.stats.Gets++
 
 	node, found := cache.entries[key]
 	if found {
 		if cache.maxAge > 0 && timeext.NanoTime()-node.Value.ts > cache.maxAge {
 			cache.remove(node)
-			cache.stats.evictions++
+			cache.stats.Evictions++
 		} else {
-			cache.stats.hits++
+			cache.stats.Hits++
 			nextCount := node.Value.frequency.Value.count + 1
 			// super edge case, int can wrap around, if that's the case don't do anything but
 			// mark as most recently accessed, it's already in the top tier and so want to keep it
@@ -194,7 +194,7 @@ func (cache *Cache[K, V]) Get(key K) (result optionext.Option[V]) {
 			result = optionext.Some(node.Value.value)
 		}
 	} else {
-		cache.stats.misses++
+		cache.stats.Misses++
 	}
 	cache.m.Unlock()
 	return
@@ -230,11 +230,11 @@ func (cache *Cache[K, V]) Clear() {
 // statsNoLock returns the stats and reset values
 func (cache *Cache[K, V]) statsNoLock() (stats Stats) {
 	stats = cache.stats
-	stats.len = len(cache.entries)
-	cache.stats.hits = 0
-	cache.stats.misses = 0
-	cache.stats.evictions = 0
-	cache.stats.gets = 0
-	cache.stats.sets = 0
+	stats.Len = len(cache.entries)
+	cache.stats.Hits = 0
+	cache.stats.Misses = 0
+	cache.stats.Evictions = 0
+	cache.stats.Gets = 0
+	cache.stats.Sets = 0
 	return
 }

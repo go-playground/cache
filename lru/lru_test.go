@@ -28,13 +28,13 @@ func TestLRUStatsCadence(t *testing.T) {
 	_ = c.Get("b")
 	time.Sleep(time.Second)
 	s := stats.Load().(Stats)
-	Equal(t, s.hits, uint(1))
-	Equal(t, s.misses, uint(1))
-	Equal(t, s.gets, uint(2))
-	Equal(t, s.sets, uint(1))
-	Equal(t, s.evictions, uint(0))
-	Equal(t, s.capacity, 2)
-	Equal(t, s.len, 1)
+	Equal(t, s.Hits, uint(1))
+	Equal(t, s.Misses, uint(1))
+	Equal(t, s.Gets, uint(2))
+	Equal(t, s.Sets, uint(1))
+	Equal(t, s.Evictions, uint(0))
+	Equal(t, s.Capacity, 2)
+	Equal(t, s.Len, 1)
 }
 
 func TestLRUBasics(t *testing.T) {
@@ -44,8 +44,8 @@ func TestLRUBasics(t *testing.T) {
 	c.Set("3", 3)
 	c.Set("1", 1) // resetting, not a mistake
 	c.Set("4", 4)
-	Equal(t, c.stats.evictions, uint(1))
-	Equal(t, c.stats.capacity, 3)
+	Equal(t, c.stats.Evictions, uint(1))
+	Equal(t, c.stats.Capacity, 3)
 	Equal(t, c.list.Len(), 3)
 	Equal(t, c.Get("1"), optionext.Some(1))
 	Equal(t, c.Get("2"), optionext.None[int]())
@@ -58,19 +58,19 @@ func TestLRUBasics(t *testing.T) {
 
 	// test clear
 	c.Clear()
-	Equal(t, c.stats.capacity, 3)
+	Equal(t, c.stats.Capacity, 3)
 	Equal(t, c.list.Len(), 0)
 }
 
 func TestLRUMaxAge(t *testing.T) {
 	c := New[string, int](3).MaxAge(time.Nanosecond).Build(context.Background())
 	c.Set("1", 1)
-	Equal(t, c.stats.capacity, 3)
+	Equal(t, c.stats.Capacity, 3)
 	Equal(t, c.list.Len(), 1)
 	time.Sleep(time.Second) // for windows :(
 	Equal(t, c.Get("1"), optionext.None[int]())
 	Equal(t, c.list.Len(), 0)
-	Equal(t, c.stats.evictions, uint(1))
+	Equal(t, c.stats.Evictions, uint(1))
 }
 
 func BenchmarkLRUCacheWithAllRegisteredFunctions(b *testing.B) {
