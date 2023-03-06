@@ -11,6 +11,20 @@ import (
 	"time"
 )
 
+func TestLRULoaderFun(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	c := New[string, int](10).CacheLoader(func(string) optionext.Option[int] {
+		return optionext.Some(-99)
+	}).Build(ctx)
+
+	Equal(t, c.Get("1"), optionext.Some(-99))
+	Equal(t, c.Get("2"), optionext.Some(-99))
+	Equal(t, c.Get("3"), optionext.Some(-99))
+	Equal(t, c.Get("4"), optionext.Some(-99))
+}
+
 func TestLRUStatsCadence(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
