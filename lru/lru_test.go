@@ -45,56 +45,24 @@ func TestLRUMaxAge(t *testing.T) {
 	Equal(t, c.stats.Evictions, uint(1))
 }
 
-func BenchmarkLRUCacheWithAllRegisteredFunctions(b *testing.B) {
-	cache := syncext.NewMutex2(New[string, string](100).MaxAge(time.Second).Build())
+func BenchmarkLRUCacheWithMaxAge(b *testing.B) {
+	cache := New[string, string](100).MaxAge(time.Second).Build()
 
 	for i := 0; i < b.N; i++ {
-		c := cache.Lock()
-		c.Set("a", "b")
-		option := c.Get("a")
-		cache.Unlock()
+		cache.Set("a", "b")
+		option := cache.Get("a")
 		if option.IsNone() || option.Unwrap() != "b" {
 			panic("undefined behaviour")
 		}
 	}
 }
 
-func BenchmarkLRUCacheNoRegisteredFunctions(b *testing.B) {
-	cache := syncext.NewMutex2(New[string, string](100).MaxAge(time.Second).Build())
+func BenchmarkLRUCacheWithNoMaxAge(b *testing.B) {
+	cache := New[string, string](100).Build()
 
 	for i := 0; i < b.N; i++ {
-		c := cache.Lock()
-		c.Set("a", "b")
-		option := c.Get("a")
-		cache.Unlock()
-		if option.IsNone() || option.Unwrap() != "b" {
-			panic("undefined behaviour")
-		}
-	}
-}
-
-func BenchmarkLRUCacheWithAllRegisteredFunctionsNoMaxAge(b *testing.B) {
-	cache := syncext.NewMutex2(New[string, string](100).Build())
-
-	for i := 0; i < b.N; i++ {
-		c := cache.Lock()
-		c.Set("a", "b")
-		option := c.Get("a")
-		cache.Unlock()
-		if option.IsNone() || option.Unwrap() != "b" {
-			panic("undefined behaviour")
-		}
-	}
-}
-
-func BenchmarkLRUCacheNoRegisteredFunctionsNoMaxAge(b *testing.B) {
-	cache := syncext.NewMutex2(New[string, string](100).Build())
-
-	for i := 0; i < b.N; i++ {
-		c := cache.Lock()
-		c.Set("a", "b")
-		option := c.Get("a")
-		cache.Unlock()
+		cache.Set("a", "b")
+		option := cache.Get("a")
 		if option.IsNone() || option.Unwrap() != "b" {
 			panic("undefined behaviour")
 		}
@@ -102,13 +70,11 @@ func BenchmarkLRUCacheNoRegisteredFunctionsNoMaxAge(b *testing.B) {
 }
 
 func BenchmarkLRUCacheGetsOnly(b *testing.B) {
-	cache := syncext.NewMutex2(New[string, string](100).Build())
-	cache.Lock().Set("a", "b")
-	cache.Unlock()
+	cache := New[string, string](100).Build()
+	cache.Set("a", "b")
 
 	for i := 0; i < b.N; i++ {
-		option := cache.Lock().Get("a")
-		cache.Unlock()
+		option := cache.Get("a")
 		if option.IsNone() || option.Unwrap() != "b" {
 			panic("undefined behaviour")
 		}
@@ -116,24 +82,21 @@ func BenchmarkLRUCacheGetsOnly(b *testing.B) {
 }
 
 func BenchmarkLRUCacheSetsOnly(b *testing.B) {
-	cache := syncext.NewMutex2(New[string, string](100).Build())
+	cache := New[string, string](100).Build()
 
 	for i := 0; i < b.N; i++ {
 		j := strconv.Itoa(i)
-		cache.Lock().Set(j, "b")
-		cache.Unlock()
+		cache.Set(j, "b")
 	}
 }
 
 func BenchmarkLRUCacheSetGetDynamicWithEvictions(b *testing.B) {
-	cache := syncext.NewMutex2(New[string, string](100).Build())
+	cache := New[string, string](100).Build()
 
 	for i := 0; i < b.N; i++ {
 		j := strconv.Itoa(i)
-		c := cache.Lock()
-		c.Set(j, j)
-		option := c.Get(j)
-		cache.Unlock()
+		cache.Set(j, j)
+		option := cache.Get(j)
 		if option.IsNone() || option.Unwrap() != j {
 			panic("undefined behaviour")
 		}
