@@ -28,10 +28,29 @@ func TestLRUBasics(t *testing.T) {
 	c.Remove("3")
 	Equal(t, c.Get("3"), optionext.None[int]())
 
+	stats := c.Stats()
+	Equal(t, stats.Hits, uint(3))
+	Equal(t, stats.Misses, uint(2))
+	Equal(t, stats.Gets, uint(5))
+	Equal(t, stats.Sets, uint(5))
+	Equal(t, stats.Evictions, uint(1))
+	Equal(t, stats.Len, 2)
+	Equal(t, stats.Capacity, 3)
+
 	// test clear
 	c.Clear()
 	Equal(t, c.stats.Capacity, 3)
 	Equal(t, c.list.Len(), 0)
+
+	// test after clear
+	stats = c.Stats()
+	Equal(t, stats.Hits, uint(0))
+	Equal(t, stats.Misses, uint(0))
+	Equal(t, stats.Gets, uint(0))
+	Equal(t, stats.Sets, uint(0))
+	Equal(t, stats.Evictions, uint(0))
+	Equal(t, stats.Len, 0)
+	Equal(t, stats.Capacity, 3)
 }
 
 func TestLRUMaxAge(t *testing.T) {

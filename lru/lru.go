@@ -127,6 +127,8 @@ func (cache *Cache[K, V]) Clear() {
 	for _, node := range cache.nodes {
 		cache.remove(node)
 	}
+	// reset stats
+	_ = cache.Stats()
 }
 
 // Stats returns the delta of Stats since last call to the Stats function.
