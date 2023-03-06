@@ -1,17 +1,14 @@
 package lru
 
 import (
-	"context"
 	listext "github.com/go-playground/pkg/v5/container/list"
 	timeext "github.com/go-playground/pkg/v5/time"
 	optionext "github.com/go-playground/pkg/v5/values/option"
-	"sync"
 	"time"
 )
 
 type builder[K comparable, V any] struct {
-	lru          *Cache[K, V]
-	statsCadence time.Duration
+	lru *Cache[K, V]
 }
 
 // New initializes a builder to create an LRU cache.
@@ -31,45 +28,13 @@ func (b *builder[K, V]) MaxAge(maxAge time.Duration) *builder[K, V] {
 	return b
 }
 
-// Stats enables you to register a stats function that will be called periodically using the supplied duration.
-//
-// The Stats sent to the function will be the delta since last called.
-// NOTE: In order to keep the cache blocked for as little time as possible the function call is not guaranteed to be
-//
-//	thread safe and is called outside of the transaction lock.
-func (b *builder[K, V]) Stats(cadence time.Duration, fn func(stats Stats)) *builder[K, V] {
-	b.statsCadence = cadence
-	b.lru.statsFn = fn
-	return b
-}
-
 // Build finalizes configuration and returns the LRU cache for use.
 //
 // The provided context is used for graceful shutdown of goroutines, such as stats reporting in background
 // goroutine and alike.
-func (b *builder[K, V]) Build(ctx context.Context) (lru *Cache[K, V]) {
+func (b *builder[K, V]) Build() (lru *Cache[K, V]) {
 	lru = b.lru
 	b.lru = nil
-
-	if lru.statsFn != nil && b.statsCadence != 0 {
-		go func(ctx context.Context, cadence time.Duration) {
-
-			var ticker = time.NewTicker(b.statsCadence)
-			defer ticker.Stop()
-
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					lru.m.Lock()
-					s := lru.statsNoLock()
-					lru.m.Unlock()
-					lru.statsFn(s)
-				}
-			}
-		}(ctx, b.statsCadence)
-	}
 	return lru
 }
 
@@ -87,17 +52,14 @@ type entry[K comparable, V any] struct {
 
 // Cache is a configured least recently used cache ready for use.
 type Cache[K comparable, V any] struct {
-	m       sync.Mutex
-	list    *listext.DoublyLinkedList[entry[K, V]]
-	nodes   map[K]*listext.Node[entry[K, V]]
-	maxAge  int64
-	stats   Stats
-	statsFn func(Stats)
+	list   *listext.DoublyLinkedList[entry[K, V]]
+	nodes  map[K]*listext.Node[entry[K, V]]
+	maxAge int64
+	stats  Stats
 }
 
 // Set sets an item into the cache. It will replace the current entry if there is one.
 func (cache *Cache[K, V]) Set(key K, value V) {
-	cache.m.Lock()
 	cache.stats.Sets++
 
 	node, found := cache.nodes[key]
@@ -122,13 +84,11 @@ func (cache *Cache[K, V]) Set(key K, value V) {
 			cache.stats.Evictions++
 		}
 	}
-	cache.m.Unlock()
 }
 
 // Get attempts to find an existing cache entry by key.
 // It returns an Option you must check before using the underlying value.
 func (cache *Cache[K, V]) Get(key K) (result optionext.Option[V]) {
-	cache.m.Lock()
 	cache.stats.Gets++
 
 	node, found := cache.nodes[key]
@@ -145,17 +105,14 @@ func (cache *Cache[K, V]) Get(key K) (result optionext.Option[V]) {
 	} else {
 		cache.stats.Misses++
 	}
-	cache.m.Unlock()
 	return
 }
 
 // Remove removes the item matching the provided key from the cache, if not present is a noop.
 func (cache *Cache[K, V]) Remove(key K) {
-	cache.m.Lock()
 	if node, found := cache.nodes[key]; found {
 		cache.remove(node)
 	}
-	cache.m.Unlock()
 }
 
 func (cache *Cache[K, V]) remove(node *listext.Node[entry[K, V]]) {
@@ -167,15 +124,15 @@ func (cache *Cache[K, V]) remove(node *listext.Node[entry[K, V]]) {
 
 // Clear empties the cache.
 func (cache *Cache[K, V]) Clear() {
-	cache.m.Lock()
 	for _, node := range cache.nodes {
 		cache.remove(node)
 	}
-	cache.m.Unlock()
+	// reset stats
+	_ = cache.Stats()
 }
 
-// statsNoLock returns the stats and reset values
-func (cache *Cache[K, V]) statsNoLock() (stats Stats) {
+// Stats returns the delta of Stats since last call to the Stats function.
+func (cache *Cache[K, V]) Stats() (stats Stats) {
 	stats = cache.stats
 	stats.Len = cache.list.Len()
 	cache.stats.Hits = 0

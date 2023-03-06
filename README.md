@@ -1,5 +1,5 @@
 # cache
-![Project status](https://img.shields.io/badge/version-0.7.0-green.svg)
+![Project status](https://img.shields.io/badge/version-0.8.0-green.svg)
 [![GoDoc](https://godoc.org/github.com/go-playground/cache?status.svg)](https://pkg.go.dev/github.com/go-playground/cache)
 ![License](https://img.shields.io/dub/l/vibe-d.svg)
 
@@ -17,6 +17,11 @@ Visit linked cache README's via the links below for more details.
 | [LRU](lru/README.md) | A Least recently Used cache.  |
 | [LFU](lfu/README.md) | A Lead Frequently Used cache. |
 
+### Misc
+
+These caches are not thread safe and this is done on purpose because of the following:
+- If not needed then no additional overhead.
+- Allows caller/locker/user to choose the locking strategy that best suits them. eg. can lock and do two gets and a set before unlocking.
 
 #### License
 

@@ -1,44 +1,16 @@
 package lru
 
 import (
-	"context"
 	. "github.com/go-playground/assert/v2"
+	syncext "github.com/go-playground/pkg/v5/sync"
 	optionext "github.com/go-playground/pkg/v5/values/option"
 	"strconv"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
 
-func TestLRUStatsCadence(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	var stats atomic.Value
-	var store sync.Once
-
-	c := New[string, int](2).Stats(time.Millisecond*750, func(s Stats) {
-		store.Do(func() {
-			stats.Store(s)
-		})
-	}).Build(ctx)
-	c.Set("a", 1)
-	_ = c.Get("a")
-	_ = c.Get("b")
-	time.Sleep(time.Second)
-	s := stats.Load().(Stats)
-	Equal(t, s.Hits, uint(1))
-	Equal(t, s.Misses, uint(1))
-	Equal(t, s.Gets, uint(2))
-	Equal(t, s.Sets, uint(1))
-	Equal(t, s.Evictions, uint(0))
-	Equal(t, s.Capacity, 2)
-	Equal(t, s.Len, 1)
-}
-
 func TestLRUBasics(t *testing.T) {
-	c := New[string, int](3).MaxAge(time.Hour).Build(context.Background())
+	c := New[string, int](3).MaxAge(time.Hour).Build()
 	c.Set("1", 1)
 	c.Set("2", 2)
 	c.Set("3", 3)
@@ -56,14 +28,33 @@ func TestLRUBasics(t *testing.T) {
 	c.Remove("3")
 	Equal(t, c.Get("3"), optionext.None[int]())
 
+	stats := c.Stats()
+	Equal(t, stats.Hits, uint(3))
+	Equal(t, stats.Misses, uint(2))
+	Equal(t, stats.Gets, uint(5))
+	Equal(t, stats.Sets, uint(5))
+	Equal(t, stats.Evictions, uint(1))
+	Equal(t, stats.Len, 2)
+	Equal(t, stats.Capacity, 3)
+
 	// test clear
 	c.Clear()
 	Equal(t, c.stats.Capacity, 3)
 	Equal(t, c.list.Len(), 0)
+
+	// test after clear
+	stats = c.Stats()
+	Equal(t, stats.Hits, uint(0))
+	Equal(t, stats.Misses, uint(0))
+	Equal(t, stats.Gets, uint(0))
+	Equal(t, stats.Sets, uint(0))
+	Equal(t, stats.Evictions, uint(0))
+	Equal(t, stats.Len, 0)
+	Equal(t, stats.Capacity, 3)
 }
 
 func TestLRUMaxAge(t *testing.T) {
-	c := New[string, int](3).MaxAge(time.Nanosecond).Build(context.Background())
+	c := New[string, int](3).MaxAge(time.Nanosecond).Build()
 	c.Set("1", 1)
 	Equal(t, c.stats.Capacity, 3)
 	Equal(t, c.list.Len(), 1)
@@ -73,12 +64,8 @@ func TestLRUMaxAge(t *testing.T) {
 	Equal(t, c.stats.Evictions, uint(1))
 }
 
-func BenchmarkLRUCacheWithAllRegisteredFunctions(b *testing.B) {
-	var stats atomic.Value
-
-	cache := New[string, string](100).MaxAge(time.Second).Stats(time.Second, func(s Stats) {
-		stats.Store(s)
-	}).Build(context.Background())
+func BenchmarkLRUCacheWithMaxAge(b *testing.B) {
+	cache := New[string, string](100).MaxAge(time.Second).Build()
 
 	for i := 0; i < b.N; i++ {
 		cache.Set("a", "b")
@@ -89,37 +76,8 @@ func BenchmarkLRUCacheWithAllRegisteredFunctions(b *testing.B) {
 	}
 }
 
-func BenchmarkLRUCacheNoRegisteredFunctions(b *testing.B) {
-
-	cache := New[string, string](100).MaxAge(time.Second).Build(context.Background())
-
-	for i := 0; i < b.N; i++ {
-		cache.Set("a", "b")
-		option := cache.Get("a")
-		if option.IsNone() || option.Unwrap() != "b" {
-			panic("undefined behaviour")
-		}
-	}
-}
-
-func BenchmarkLRUCacheWithAllRegisteredFunctionsNoMaxAge(b *testing.B) {
-	var stats atomic.Value
-
-	cache := New[string, string](100).Stats(time.Second, func(s Stats) {
-		stats.Store(s)
-	}).Build(context.Background())
-
-	for i := 0; i < b.N; i++ {
-		cache.Set("a", "b")
-		option := cache.Get("a")
-		if option.IsNone() || option.Unwrap() != "b" {
-			panic("undefined behaviour")
-		}
-	}
-}
-
-func BenchmarkLRUCacheNoRegisteredFunctionsNoMaxAge(b *testing.B) {
-	cache := New[string, string](100).Build(context.Background())
+func BenchmarkLRUCacheWithNoMaxAge(b *testing.B) {
+	cache := New[string, string](100).Build()
 
 	for i := 0; i < b.N; i++ {
 		cache.Set("a", "b")
@@ -131,7 +89,7 @@ func BenchmarkLRUCacheNoRegisteredFunctionsNoMaxAge(b *testing.B) {
 }
 
 func BenchmarkLRUCacheGetsOnly(b *testing.B) {
-	cache := New[string, string](100).Build(context.Background())
+	cache := New[string, string](100).Build()
 	cache.Set("a", "b")
 
 	for i := 0; i < b.N; i++ {
@@ -143,7 +101,7 @@ func BenchmarkLRUCacheGetsOnly(b *testing.B) {
 }
 
 func BenchmarkLRUCacheSetsOnly(b *testing.B) {
-	cache := New[string, string](100).Build(context.Background())
+	cache := New[string, string](100).Build()
 
 	for i := 0; i < b.N; i++ {
 		j := strconv.Itoa(i)
@@ -152,7 +110,7 @@ func BenchmarkLRUCacheSetsOnly(b *testing.B) {
 }
 
 func BenchmarkLRUCacheSetGetDynamicWithEvictions(b *testing.B) {
-	cache := New[string, string](100).Build(context.Background())
+	cache := New[string, string](100).Build()
 
 	for i := 0; i < b.N; i++ {
 		j := strconv.Itoa(i)
@@ -165,11 +123,13 @@ func BenchmarkLRUCacheSetGetDynamicWithEvictions(b *testing.B) {
 }
 
 func BenchmarkLRUCacheGetSetParallel(b *testing.B) {
-	cache := New[string, string](100).Build(context.Background())
+	cache := syncext.NewMutex2(New[string, string](100).Build())
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			cache.Set("a", "b")
-			option := cache.Get("a")
+			c := cache.Lock()
+			c.Set("a", "b")
+			option := c.Get("a")
+			cache.Unlock()
 			if option.IsNone() || option.Unwrap() != "b" {
 				panic("undefined behaviour")
 			}
