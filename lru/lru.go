@@ -1,7 +1,6 @@
 package lru
 
 import (
-	"context"
 	listext "github.com/go-playground/pkg/v5/container/list"
 	timeext "github.com/go-playground/pkg/v5/time"
 	optionext "github.com/go-playground/pkg/v5/values/option"
@@ -33,7 +32,7 @@ func (b *builder[K, V]) MaxAge(maxAge time.Duration) *builder[K, V] {
 //
 // The provided context is used for graceful shutdown of goroutines, such as stats reporting in background
 // goroutine and alike.
-func (b *builder[K, V]) Build(ctx context.Context) (lru *Cache[K, V]) {
+func (b *builder[K, V]) Build() (lru *Cache[K, V]) {
 	lru = b.lru
 	b.lru = nil
 	return lru
@@ -130,8 +129,8 @@ func (cache *Cache[K, V]) Clear() {
 	}
 }
 
-// statsNoLock returns the stats and reset values
-func (cache *Cache[K, V]) statsNoLock() (stats Stats) {
+// Stats returns the delta of Stats since last call to the Stats function.
+func (cache *Cache[K, V]) Stats() (stats Stats) {
 	stats = cache.stats
 	stats.Len = cache.list.Len()
 	cache.stats.Hits = 0

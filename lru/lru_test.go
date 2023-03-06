@@ -1,7 +1,6 @@
 package lru
 
 import (
-	"context"
 	. "github.com/go-playground/assert/v2"
 	syncext "github.com/go-playground/pkg/v5/sync"
 	optionext "github.com/go-playground/pkg/v5/values/option"
@@ -11,7 +10,7 @@ import (
 )
 
 func TestLRUBasics(t *testing.T) {
-	c := New[string, int](3).MaxAge(time.Hour).Build(context.Background())
+	c := New[string, int](3).MaxAge(time.Hour).Build()
 	c.Set("1", 1)
 	c.Set("2", 2)
 	c.Set("3", 3)
@@ -36,7 +35,7 @@ func TestLRUBasics(t *testing.T) {
 }
 
 func TestLRUMaxAge(t *testing.T) {
-	c := New[string, int](3).MaxAge(time.Nanosecond).Build(context.Background())
+	c := New[string, int](3).MaxAge(time.Nanosecond).Build()
 	c.Set("1", 1)
 	Equal(t, c.stats.Capacity, 3)
 	Equal(t, c.list.Len(), 1)
@@ -47,7 +46,7 @@ func TestLRUMaxAge(t *testing.T) {
 }
 
 func BenchmarkLRUCacheWithAllRegisteredFunctions(b *testing.B) {
-	cache := syncext.NewMutex2(New[string, string](100).MaxAge(time.Second).Build(context.Background()))
+	cache := syncext.NewMutex2(New[string, string](100).MaxAge(time.Second).Build())
 
 	for i := 0; i < b.N; i++ {
 		c := cache.Lock()
@@ -61,7 +60,7 @@ func BenchmarkLRUCacheWithAllRegisteredFunctions(b *testing.B) {
 }
 
 func BenchmarkLRUCacheNoRegisteredFunctions(b *testing.B) {
-	cache := syncext.NewMutex2(New[string, string](100).MaxAge(time.Second).Build(context.Background()))
+	cache := syncext.NewMutex2(New[string, string](100).MaxAge(time.Second).Build())
 
 	for i := 0; i < b.N; i++ {
 		c := cache.Lock()
@@ -75,7 +74,7 @@ func BenchmarkLRUCacheNoRegisteredFunctions(b *testing.B) {
 }
 
 func BenchmarkLRUCacheWithAllRegisteredFunctionsNoMaxAge(b *testing.B) {
-	cache := syncext.NewMutex2(New[string, string](100).Build(context.Background()))
+	cache := syncext.NewMutex2(New[string, string](100).Build())
 
 	for i := 0; i < b.N; i++ {
 		c := cache.Lock()
@@ -89,12 +88,13 @@ func BenchmarkLRUCacheWithAllRegisteredFunctionsNoMaxAge(b *testing.B) {
 }
 
 func BenchmarkLRUCacheNoRegisteredFunctionsNoMaxAge(b *testing.B) {
-	cache := syncext.NewMutex2(New[string, string](100).Build(context.Background()))
+	cache := syncext.NewMutex2(New[string, string](100).Build())
 
 	for i := 0; i < b.N; i++ {
 		c := cache.Lock()
 		c.Set("a", "b")
 		option := c.Get("a")
+		cache.Unlock()
 		if option.IsNone() || option.Unwrap() != "b" {
 			panic("undefined behaviour")
 		}
@@ -102,7 +102,7 @@ func BenchmarkLRUCacheNoRegisteredFunctionsNoMaxAge(b *testing.B) {
 }
 
 func BenchmarkLRUCacheGetsOnly(b *testing.B) {
-	cache := syncext.NewMutex2(New[string, string](100).Build(context.Background()))
+	cache := syncext.NewMutex2(New[string, string](100).Build())
 	cache.Lock().Set("a", "b")
 	cache.Unlock()
 
@@ -116,7 +116,7 @@ func BenchmarkLRUCacheGetsOnly(b *testing.B) {
 }
 
 func BenchmarkLRUCacheSetsOnly(b *testing.B) {
-	cache := syncext.NewMutex2(New[string, string](100).Build(context.Background()))
+	cache := syncext.NewMutex2(New[string, string](100).Build())
 
 	for i := 0; i < b.N; i++ {
 		j := strconv.Itoa(i)
@@ -126,7 +126,7 @@ func BenchmarkLRUCacheSetsOnly(b *testing.B) {
 }
 
 func BenchmarkLRUCacheSetGetDynamicWithEvictions(b *testing.B) {
-	cache := syncext.NewMutex2(New[string, string](100).Build(context.Background()))
+	cache := syncext.NewMutex2(New[string, string](100).Build())
 
 	for i := 0; i < b.N; i++ {
 		j := strconv.Itoa(i)
@@ -141,7 +141,7 @@ func BenchmarkLRUCacheSetGetDynamicWithEvictions(b *testing.B) {
 }
 
 func BenchmarkLRUCacheGetSetParallel(b *testing.B) {
-	cache := syncext.NewMutex2(New[string, string](100).Build(context.Background()))
+	cache := syncext.NewMutex2(New[string, string](100).Build())
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			c := cache.Lock()

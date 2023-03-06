@@ -16,23 +16,22 @@ If your cache can only hold a fraction of values being stored or data seen on a 
 package main
 
 import (
-	"context"
 	"fmt"
 	"github.com/go-playground/cache/lru"
+	syncext "github.com/go-playground/pkg/v5/sync"
 	"time"
 )
 
 func main() {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// wrapping with a Mutex, if not needed omit.
+	cache := syncext.NewMutex2(lru.New[string, string](100).MaxAge(time.Hour).Build())
 
-	cache := lru.New[string, string](100).MaxAge(time.Hour).Stats(time.Minute, func(stats lru.Stats) {
-		fmt.Printf("Stats: %#v\n", stats)
-	}).Build(ctx)
-	cache.Set("a", "b")
-	cache.Set("c", "d")
+	c := cache.Lock()
+	c.Set("a", "b")
+	c.Set("c", "d")
+	option := c.Get("a")
+	cache.Unlock()
 
-	option := cache.Get("a")
 	if option.IsNone() {
 		return
 	}
