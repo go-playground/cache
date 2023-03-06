@@ -65,19 +65,16 @@ func TestLRUMaxAge(t *testing.T) {
 }
 
 func TestLRULoaderFun(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	c := New[string, int](10).CacheLoader(func(string) optionext.Option[int] {
 		return optionext.Some(-99)
-	}).Build(ctx)
+	}).Build()
 
 	Equal(t, c.Get("1"), optionext.Some(-99))
 	Equal(t, c.Get("2"), optionext.Some(-99))
 	Equal(t, c.Get("3"), optionext.Some(-99))
 	Equal(t, c.Get("4"), optionext.Some(-99))
 }
-
 
 func BenchmarkLRUCacheWithMaxAge(b *testing.B) {
 	cache := New[string, string](100).MaxAge(time.Second).Build()

@@ -4,8 +4,8 @@ import (
 	listext "github.com/go-playground/pkg/v5/container/list"
 	timeext "github.com/go-playground/pkg/v5/time"
 	optionext "github.com/go-playground/pkg/v5/values/option"
-	"time"
 	"log"
+	"time"
 )
 
 type builder[K comparable, V any] struct {
@@ -16,10 +16,10 @@ type builder[K comparable, V any] struct {
 func New[K comparable, V any](capacity int) *builder[K, V] {
 	return &builder[K, V]{
 		lru: &Cache[K, V]{
-			list:  listext.NewDoublyLinked[entry[K, V]](),
-			nodes: make(map[K]*listext.Node[entry[K, V]]),
-			stats: Stats{Capacity: capacity},
-			loader: optionext.None[func(K) optionext.Option[V]],
+			list:   listext.NewDoublyLinked[entry[K, V]](),
+			nodes:  make(map[K]*listext.Node[entry[K, V]]),
+			stats:  Stats{Capacity: capacity},
+			loader: optionext.None[func(K) optionext.Option[V]](),
 		},
 	}
 }
@@ -67,8 +67,7 @@ type Cache[K comparable, V any] struct {
 	nodes  map[K]*listext.Node[entry[K, V]]
 	maxAge int64
 	stats  Stats
-	loader  optionext.Option[func(K) optionext.Option[V]]
-
+	loader optionext.Option[func(K) optionext.Option[V]]
 }
 
 // Set sets an item into the cache. It will replace the current entry if there is one.
@@ -115,9 +114,9 @@ func (cache *Cache[K, V]) Get(key K) (result optionext.Option[V]) {
 	return value
 }
 
-// Get attempts to find an existing cache entry by key.
+// get attempts to find an existing cache entry by key.
 // It returns an Option you must check before using the underlying value.
-func (cache *Cache[K, V]) Get(key K) (result optionext.Option[V]) {
+func (cache *Cache[K, V]) get(key K) (result optionext.Option[V]) {
 	cache.stats.Gets++
 
 	node, found := cache.nodes[key]
