@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2023-03-05
+### Removed
+- Inner Mutex to allow more flexible usage by the caller/user.
+- Stats cadence helper function.
+
+### Added
+- Exposed Stats function for reporting.
+
 ## [0.7.0] - 2023-03-05
 ### Fixed
 - Exposure of Stats fields.
@@ -45,7 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - LRU & LFU cache implementations backed by a generic linked list.
 
-[Unreleased]: https://github.com/go-playground/cache/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/go-playground/cache/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/go-playground/cache/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/go-playground/cache/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/go-playground/cache/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/go-playground/cache/compare/v0.4.0...v0.5.0
