@@ -7,7 +7,6 @@ You would typically use an LFU cache when:
 
 - Capacity of cache is far lower than data available.
 - Entries being used are high frequency compared to others over time.
-
 Both above will prevent the most frequently use data from flapping in and out of the cache.
 
 ## Usage
@@ -41,9 +40,9 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				c := cache.Lock()
-				stats := c.Stats()
-				cache.Unlock()
+				guard := cache.Lock()
+				stats := guard.T.Stats()
+				guard.Unlock()
 
 				// do things with stats
 				fmt.Printf("%#v\n", stats)
@@ -51,11 +50,11 @@ func main() {
 		}
 	}(ctx)
 
-	c := cache.Lock()
-	c.Set("a", "b")
-	c.Set("c", "d")
-	option := c.Get("a")
-	cache.Unlock()
+	guard := cache.Lock()
+	guard.T.Set("a", "b")
+	guard.T.Set("c", "d")
+	option := guard.T.Get("a")
+	guard.Unlock()
 
 	if option.IsNone() {
 		return

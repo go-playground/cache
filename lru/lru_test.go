@@ -126,10 +126,10 @@ func BenchmarkLRUCacheGetSetParallel(b *testing.B) {
 	cache := syncext.NewMutex2(New[string, string](100).Build())
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			c := cache.Lock()
-			c.Set("a", "b")
-			option := c.Get("a")
-			cache.Unlock()
+			guard := cache.Lock()
+			guard.T.Set("a", "b")
+			option := guard.T.Get("a")
+			guard.Unlock()
 			if option.IsNone() || option.Unwrap() != "b" {
 				panic("undefined behaviour")
 			}
