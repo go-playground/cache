@@ -1,5 +1,5 @@
 # cache
-![Project status](https://img.shields.io/badge/version-0.9.0-green.svg)
+![Project status](https://img.shields.io/badge/version-0.10.0-green.svg)
 [![GoDoc](https://godoc.org/github.com/go-playground/cache?status.svg)](https://pkg.go.dev/github.com/go-playground/cache)
 ![License](https://img.shields.io/dub/l/vibe-d.svg)
 
