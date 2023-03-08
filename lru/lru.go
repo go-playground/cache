@@ -4,6 +4,7 @@ import (
 	listext "github.com/go-playground/pkg/v5/container/list"
 	timeext "github.com/go-playground/pkg/v5/time"
 	optionext "github.com/go-playground/pkg/v5/values/option"
+	"log"
 	"time"
 )
 
@@ -15,9 +16,10 @@ type builder[K comparable, V any] struct {
 func New[K comparable, V any](capacity int) *builder[K, V] {
 	return &builder[K, V]{
 		lru: &Cache[K, V]{
-			list:  listext.NewDoublyLinked[entry[K, V]](),
-			nodes: make(map[K]*listext.Node[entry[K, V]]),
-			stats: Stats{Capacity: capacity},
+			list:   listext.NewDoublyLinked[entry[K, V]](),
+			nodes:  make(map[K]*listext.Node[entry[K, V]]),
+			stats:  Stats{Capacity: capacity},
+			loader: optionext.None[func(K) optionext.Option[V]](),
 		},
 	}
 }
@@ -25,6 +27,15 @@ func New[K comparable, V any](capacity int) *builder[K, V] {
 // MaxAge sets the maximum age of an entry before it should be discarded; passively.
 func (b *builder[K, V]) MaxAge(maxAge time.Duration) *builder[K, V] {
 	b.lru.maxAge = int64(maxAge)
+	return b
+}
+
+// CacheLoader sets the loader function to put values in the cache.
+func (b *builder[K, V]) CacheLoader(loader func(K) optionext.Option[V]) *builder[K, V] {
+	if loader == nil {
+		log.Fatal("cannot put a nil loader.")
+	}
+	b.lru.loader = optionext.Some(loader)
 	return b
 }
 
@@ -56,6 +67,7 @@ type Cache[K comparable, V any] struct {
 	nodes  map[K]*listext.Node[entry[K, V]]
 	maxAge int64
 	stats  Stats
+	loader optionext.Option[func(K) optionext.Option[V]]
 }
 
 // Set sets an item into the cache. It will replace the current entry if there is one.
@@ -86,9 +98,25 @@ func (cache *Cache[K, V]) Set(key K, value V) {
 	}
 }
 
-// Get attempts to find an existing cache entry by key.
+// Get attempts to find an existing cache entry by key or if cache loader is set then get from this.
 // It returns an Option you must check before using the underlying value.
 func (cache *Cache[K, V]) Get(key K) (result optionext.Option[V]) {
+	value := cache.get(key)
+
+	if value.IsNone() && cache.loader.IsSome() {
+		value = cache.loader.Unwrap()(key)
+
+		if value.IsSome() {
+			cache.Set(key, value.Unwrap())
+		}
+	}
+
+	return value
+}
+
+// get attempts to find an existing cache entry by key.
+// It returns an Option you must check before using the underlying value.
+func (cache *Cache[K, V]) get(key K) (result optionext.Option[V]) {
 	cache.stats.Gets++
 
 	node, found := cache.nodes[key]
