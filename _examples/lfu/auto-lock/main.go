@@ -3,8 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/go-playground/cache/lru"
-	syncext "github.com/go-playground/pkg/v5/sync"
+	"github.com/go-playground/cache/lfu"
 	"time"
 )
 
@@ -12,8 +11,8 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// wrapping with a Mutex, if not needed omit or use BuildAutoLock for single operation per lock helper.
-	cache := syncext.NewMutex2(lru.New[string, string](100).MaxAge(time.Hour).Build())
+	// Guarding with a Mutex with one operation per interaction semantics.
+	cache := lfu.New[string, string](100).MaxAge(time.Hour).BuildAutoLock()
 
 	// example of collecting/emitting stats for cache
 	// this does require a mutex guard to collect async
@@ -27,9 +26,7 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				guard := cache.Lock()
-				stats := guard.T.Stats()
-				guard.Unlock()
+				stats := cache.Stats()
 
 				// do things with stats
 				fmt.Printf("%#v\n", stats)
@@ -37,11 +34,9 @@ func main() {
 		}
 	}(ctx)
 
-	guard := cache.Lock()
-	guard.T.Set("a", "b")
-	guard.T.Set("c", "d")
-	option := guard.T.Get("a")
-	guard.Unlock()
+	cache.Set("a", "b")
+	cache.Set("c", "d")
+	option := cache.Get("a")
 
 	if option.IsNone() {
 		return

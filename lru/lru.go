@@ -36,14 +36,12 @@ func (b *builder[K, V]) Build() (lru *Cache[K, V]) {
 	return lru
 }
 
-// BuildAutoLocking finalizes configuration and returns an LRU cache for use guarded by a mutex.BuildAutoLock
+// BuildAutoLock finalizes configuration and returns an LRU cache for use guarded by a mutex.
 //
-// See Build for Cache where you may choose your own locking scemantics.
+// See Build for Cache where you may choose your own locking semantics.
 func (b *builder[K, V]) BuildAutoLock() AutoLockCache[K, V] {
-	lru := b.lru
-	b.lru = nil
 	return AutoLockCache[K, V]{
-		cache: syncext.NewMutex2(lru),
+		cache: syncext.NewMutex2(b.Build()),
 	}
 }
 
