@@ -29,9 +29,6 @@ func (b *builder[K, V]) MaxAge(maxAge time.Duration) *builder[K, V] {
 }
 
 // Build finalizes configuration and returns the LFU cache for use.
-//
-// The provided context is used for graceful shutdown of goroutines, such as stats reporting in background
-// goroutine and alike.
 func (b *builder[K, V]) Build() (lfu *Cache[K, V]) {
 	lfu = b.lfu
 	b.lfu = nil
