@@ -12,7 +12,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// wrapping with a Mutex, if not needed omit.
+	// wrapping with a Mutex, if not needed omit or use BuildAutoLock for single operation per lock helper.
 	cache := syncext.NewMutex2(lfu.New[string, string](100).MaxAge(time.Hour).Build())
 
 	// example of collecting/emitting stats for cache
