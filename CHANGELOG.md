@@ -6,7 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.11.0] - 2023-03-20
+## [0.12.0] - 2023-03-20
+### Added
+- More examples and updated docs.
+
+### Changed
+- Updated AutoLockCache initialization code.
+
+## [0.11.0] - 2023-03-19
 ### Added
 - AutoLockCache helper for LRU & LFU caches for when the flexibility of fine grained control of locking scemantics are not required.
 
@@ -67,7 +74,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - LRU & LFU cache implementations backed by a generic linked list.
 
-[Unreleased]: https://github.com/go-playground/cache/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/go-playground/cache/compare/v0.12.0...HEAD
+[0.11.0]: https://github.com/go-playground/cache/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/go-playground/cache/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/go-playground/cache/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/go-playground/cache/compare/v0.8.0...v0.9.0
