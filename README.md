@@ -17,11 +17,16 @@ Visit linked cache README's via the links below for more details.
 | [LRU](lru/README.md) | A Least recently Used cache.  |
 | [LFU](lfu/README.md) | A Lead Frequently Used cache. |
 
-### Misc
+### Thread Safety
 
-These caches are not thread safe and this is done on purpose because of the following:
-- If not needed then no additional overhead.
-- Allows caller/locker/user to choose the locking strategy that best suits them. eg. can lock and do two gets and a set before unlocking.
+These caches have the option of being built with no locking, allowing fine grained control of locking scemantics for the caller, and an auto locking option, for when fine grained control is not required.
+
+When to control your own locking scemantics:
+- No additional overhead if not needed.
+- If one or more operations are desired to be done at once, which allows caller/locker/user to choose the locking strategy that best suits them. eg. can lock and do two gets and a set before unlocking.
+
+When to use auto locking:
+- When only one operation will ever be done at once eg. Get, Set, Remove, ...
 
 #### License
 
