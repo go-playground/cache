@@ -2,6 +2,7 @@ package lru
 
 import (
 	listext "github.com/go-playground/pkg/v5/container/list"
+	syncext "github.com/go-playground/pkg/v5/sync"
 	timeext "github.com/go-playground/pkg/v5/time"
 	optionext "github.com/go-playground/pkg/v5/values/option"
 	"time"
@@ -29,13 +30,21 @@ func (b *builder[K, V]) MaxAge(maxAge time.Duration) *builder[K, V] {
 }
 
 // Build finalizes configuration and returns the LRU cache for use.
-//
-// The provided context is used for graceful shutdown of goroutines, such as stats reporting in background
-// goroutine and alike.
 func (b *builder[K, V]) Build() (lru *Cache[K, V]) {
 	lru = b.lru
 	b.lru = nil
 	return lru
+}
+
+// BuildAutoLocking finalizes configuration and returns an LRU cache for use guarded by a mutex.BuildAutoLock
+//
+// See Build for Cache where you may choose your own locking scemantics.
+func (b *builder[K, V]) BuildAutoLock() AutoLockCache[K, V] {
+	lru := b.lru
+	b.lru = nil
+	return AutoLockCache[K, V]{
+		cache: syncext.NewMutex2(lru),
+	}
 }
 
 // Stats represents the cache statistics.
