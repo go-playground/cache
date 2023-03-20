@@ -6,7 +6,7 @@ import (
 )
 
 // AutoLockCache is a drop in replacement for Cache which automatically handles locking all cache interactions.
-// This is for ease of use when the flexibility of locking scemantics are not required.
+// This is for ease of use when the flexibility of fine grained locking scemantics are not required.
 type AutoLockCache[K comparable, V any] struct {
 	cache syncext.Mutex2[*Cache[K, V]]
 }
