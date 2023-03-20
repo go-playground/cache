@@ -1,4 +1,4 @@
-package lru
+package lfu
 
 import (
 	. "github.com/go-playground/assert/v2"
@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func TestLRUAutoLockCache(t *testing.T) {
+func TestLFUAutoLockCache(t *testing.T) {
 	c := New[string, int](3).MaxAge(time.Hour).BuildAutoLock()
 	c.Set("1", 1)
 	c.Set("2", 2)
@@ -29,7 +29,7 @@ func TestLRUAutoLockCache(t *testing.T) {
 	Equal(t, c.Get("1"), optionext.None[int]())
 }
 
-func BenchmarkLRUAutoLockCacheGetSetParallel(b *testing.B) {
+func BenchmarkLFUAutoLockCacheGetSetParallel(b *testing.B) {
 	cache := New[string, string](100).BuildAutoLock()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {

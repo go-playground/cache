@@ -2,6 +2,7 @@ package lfu
 
 import (
 	listext "github.com/go-playground/pkg/v5/container/list"
+	syncext "github.com/go-playground/pkg/v5/sync"
 	timeext "github.com/go-playground/pkg/v5/time"
 	optionext "github.com/go-playground/pkg/v5/values/option"
 	"time"
@@ -33,6 +34,17 @@ func (b *builder[K, V]) Build() (lfu *Cache[K, V]) {
 	lfu = b.lfu
 	b.lfu = nil
 	return lfu
+}
+
+// BuildAutoLocking finalizes configuration and returns an LRU cache for use guarded by a mutex.BuildAutoLock
+//
+// See Build for Cache where you may choose your own locking scemantics.
+func (b *builder[K, V]) BuildAutoLock() AutoLockCache[K, V] {
+	lfu := b.lfu
+	b.lfu = nil
+	return AutoLockCache[K, V]{
+		cache: syncext.NewMutex2(lfu),
+	}
 }
 
 // Stats represents the cache statistics.
