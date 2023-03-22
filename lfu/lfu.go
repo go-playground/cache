@@ -36,11 +36,9 @@ func (b *builder[K, V]) Build() (lfu *Cache[K, V]) {
 	return lfu
 }
 
-// BuildAutoLock finalizes configuration and returns an LRU cache for use guarded by a mutex.
-//
-// See Build for Cache where you may choose your own locking semantics.
-func (b *builder[K, V]) BuildAutoLock() AutoLockCache[K, V] {
-	return AutoLockCache[K, V]{
+// BuildThreadSafe finalizes configuration and returns an LRU cache for use guarded by a mutex.
+func (b *builder[K, V]) BuildThreadSafe() ThreadSafeCache[K, V] {
+	return ThreadSafeCache[K, V]{
 		cache: syncext.NewMutex2(b.Build()),
 	}
 }
