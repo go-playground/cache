@@ -1,4 +1,4 @@
-package lru
+package lfu
 
 import (
 	. "github.com/go-playground/assert/v2"
@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-func TestLRUAutoLockCache(t *testing.T) {
-	c := New[string, int](3).MaxAge(time.Hour).BuildAutoLock()
+func TestLFUThreadSafeCache(t *testing.T) {
+	c := New[string, int](3).MaxAge(time.Hour).BuildThreadSafe()
 	c.Set("1", 1)
 	c.Set("2", 2)
 	Equal(t, c.Get("1"), optionext.Some(1))
@@ -29,12 +29,27 @@ func TestLRUAutoLockCache(t *testing.T) {
 	Equal(t, c.Get("1"), optionext.None[int]())
 }
 
-func BenchmarkLRUAutoLockCacheGetSetParallel(b *testing.B) {
-	cache := New[string, string](100).BuildAutoLock()
+func BenchmarkLFUThreadSafeCacheGetSetSingleOperationLockParallel(b *testing.B) {
+	cache := New[string, string](100).BuildThreadSafe()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			cache.Set("a", "b")
 			option := cache.Get("a")
+			if option.IsNone() || option.Unwrap() != "b" {
+				panic("undefined behaviour")
+			}
+		}
+	})
+}
+
+func BenchmarkLFUThreadSafeCacheGetSetMultipleOperationLockParallel(b *testing.B) {
+	cache := New[string, string](100).BuildThreadSafe()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			guard := cache.LockGuard()
+			guard.T.Set("a", "b")
+			option := guard.T.Get("a")
+			guard.Unlock()
 			if option.IsNone() || option.Unwrap() != "b" {
 				panic("undefined behaviour")
 			}
