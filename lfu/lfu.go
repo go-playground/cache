@@ -23,8 +23,13 @@ func New[K comparable, V any](capacity int) *builder[K, V] {
 	}
 }
 
-// MaxAge sets the maximum age of an entry before it should be discarded; passively.
+// MaxAge sets the maximum age of an entry before it will be passively discarded.
+//
+// Default is no max age.
 func (b *builder[K, V]) MaxAge(maxAge time.Duration) *builder[K, V] {
+	if maxAge < 0 {
+		panic("MaxAge must be a 0 or more")
+	}
 	b.lfu.maxAge = int64(maxAge)
 	return b
 }
