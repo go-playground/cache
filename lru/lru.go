@@ -50,8 +50,26 @@ func (b *builder[K, V]) BuildThreadSafe() ThreadSafeCache[K, V] {
 
 // Stats represents the cache statistics.
 type Stats struct {
-	Capacity, Len                       int
-	Hits, Misses, Evictions, Gets, Sets uint
+	// Capacity is the maximum cache capacity.
+	Capacity int
+
+	// Len is the current consumed cache capacity.
+	Len int
+
+	// Hits is the number of cache hits.
+	Hits uint
+
+	// Misses is the number of cache misses.
+	Misses uint
+
+	// Evictions is the number of cache evictions performed.
+	Evictions uint
+
+	// Gets is the number of cache gets performed regardless of a hit or miss.
+	Gets uint
+
+	// Sets is the number of cache sets performed.
+	Sets uint
 }
 
 type entry[K comparable, V any] struct {
