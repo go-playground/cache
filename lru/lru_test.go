@@ -12,7 +12,7 @@ import (
 func TestLRUBadConfig(t *testing.T) {
 	PanicMatches(t, func() {
 		New[string, int](3).MaxAge(-time.Hour)
-	}, "MaxAge must be a 0 or more")
+	}, "MaxAge is not permitted to be a negative value")
 }
 
 func TestLRUBasics(t *testing.T) {

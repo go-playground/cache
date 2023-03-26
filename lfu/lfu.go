@@ -28,7 +28,7 @@ func New[K comparable, V any](capacity int) *builder[K, V] {
 // Default is no max age.
 func (b *builder[K, V]) MaxAge(maxAge time.Duration) *builder[K, V] {
 	if maxAge < 0 {
-		panic("MaxAge must be a 0 or more")
+		panic("MaxAge is not permitted to be a negative value")
 	}
 	b.lfu.maxAge = int64(maxAge)
 	return b
