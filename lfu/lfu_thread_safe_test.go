@@ -27,6 +27,12 @@ func TestLFUThreadSafeCache(t *testing.T) {
 
 	c.Clear()
 	Equal(t, c.Get("1"), optionext.None[int]())
+
+	guard := c.LockGuard()
+	guard.T.Set("1", 1)
+	guard.T.Remove("1")
+	guard.Unlock()
+	Equal(t, c.Get("1"), optionext.None[int]())
 }
 
 func BenchmarkLFUThreadSafeCacheGetSetSingleOperationLockParallel(b *testing.B) {
