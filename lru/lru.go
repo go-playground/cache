@@ -55,9 +55,9 @@ type Stats struct {
 }
 
 type entry[K comparable, V any] struct {
-	key   K
-	value V
-	ts    int64
+	key       K
+	value     V
+	timestamp int64
 }
 
 // Cache is a configured least recently used cache ready for use.
@@ -76,7 +76,7 @@ func (cache *Cache[K, V]) Set(key K, value V) {
 	if found {
 		node.Value.value = value
 		if cache.maxAge > 0 {
-			node.Value.ts = timeext.NanoTime()
+			node.Value.timestamp = timeext.NanoTime()
 		}
 		cache.list.MoveToFront(node)
 	} else {
@@ -85,7 +85,7 @@ func (cache *Cache[K, V]) Set(key K, value V) {
 			value: value,
 		}
 		if cache.maxAge > 0 {
-			e.ts = timeext.NanoTime()
+			e.timestamp = timeext.NanoTime()
 		}
 		cache.nodes[key] = cache.list.PushFront(e)
 		if cache.list.Len() > cache.stats.Capacity {
@@ -103,7 +103,7 @@ func (cache *Cache[K, V]) Get(key K) (result optionext.Option[V]) {
 
 	node, found := cache.nodes[key]
 	if found {
-		if cache.maxAge > 0 && timeext.NanoTime()-node.Value.ts > cache.maxAge {
+		if cache.maxAge > 0 && timeext.NanoTime()-node.Value.timestamp > cache.maxAge {
 			delete(cache.nodes, key)
 			cache.list.Remove(node)
 			cache.stats.Evictions++
@@ -137,7 +137,7 @@ func (cache *Cache[K, V]) Clear() {
 	for _, node := range cache.nodes {
 		cache.remove(node)
 	}
-	// reset stats
+	// resets/empties stats
 	_ = cache.Stats()
 }
 

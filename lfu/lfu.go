@@ -57,7 +57,7 @@ type Stats struct {
 type entry[K comparable, V any] struct {
 	key       K
 	value     V
-	ts        int64
+	timestamp int64
 	frequency *listext.Node[frequency[K, V]]
 }
 
@@ -82,7 +82,7 @@ func (cache *Cache[K, V]) Set(key K, value V) {
 	if found {
 		node.Value.value = value
 		if cache.maxAge > 0 {
-			node.Value.ts = timeext.NanoTime()
+			node.Value.timestamp = timeext.NanoTime()
 		}
 		node.Value.frequency.Value.entries.MoveToFront(node)
 	} else {
@@ -101,7 +101,7 @@ func (cache *Cache[K, V]) Set(key K, value V) {
 			frequency: freq,
 		}
 		if cache.maxAge > 0 {
-			e.ts = timeext.NanoTime()
+			e.timestamp = timeext.NanoTime()
 		}
 		cache.entries[key] = freq.Value.entries.PushFront(e)
 		if len(cache.entries) > cache.stats.Capacity {
@@ -129,7 +129,7 @@ func (cache *Cache[K, V]) Get(key K) (result optionext.Option[V]) {
 
 	node, found := cache.entries[key]
 	if found {
-		if cache.maxAge > 0 && timeext.NanoTime()-node.Value.ts > cache.maxAge {
+		if cache.maxAge > 0 && timeext.NanoTime()-node.Value.timestamp > cache.maxAge {
 			cache.remove(node)
 			cache.stats.Evictions++
 		} else {
@@ -190,7 +190,7 @@ func (cache *Cache[K, V]) Clear() {
 	for _, node := range cache.entries {
 		cache.remove(node)
 	}
-	// reset stats
+	// resets/empties stats
 	_ = cache.Stats()
 }
 
