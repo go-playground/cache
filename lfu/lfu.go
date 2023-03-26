@@ -38,7 +38,7 @@ func (b *builder[K, V]) MaxAge(maxAge time.Duration) *builder[K, V] {
 func (b *builder[K, V]) Build() (lfu *Cache[K, V]) {
 	lfu = b.lfu
 	b.lfu = nil
-	return lfu
+	return
 }
 
 // BuildThreadSafe finalizes configuration and returns an LRU cache for use guarded by a mutex.
@@ -75,8 +75,8 @@ type Stats struct {
 type entry[K comparable, V any] struct {
 	key       K
 	value     V
-	timestamp int64
 	frequency *listext.Node[frequency[K, V]]
+	timestamp int64
 }
 
 type frequency[K comparable, V any] struct {

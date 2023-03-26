@@ -38,7 +38,7 @@ func (b *builder[K, V]) MaxAge(maxAge time.Duration) *builder[K, V] {
 func (b *builder[K, V]) Build() (lru *Cache[K, V]) {
 	lru = b.lru
 	b.lru = nil
-	return lru
+	return
 }
 
 // BuildThreadSafe finalizes configuration and returns an LRU cache for use guarded by a mutex.
