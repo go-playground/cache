@@ -55,7 +55,7 @@ func main() {
 	defer cancel()
 
 	// Guarding with a Mutex with one operation per interaction semantics.
-	cache := lfu.New[string, string](100).MaxAge(time.Hour).BuildAutoLock()
+	cache := lfu.New[string, string](100).MaxAge(time.Hour).BuildThreadSafe()
 
 	// example of collecting/emitting stats for cache
 	// this does require a mutex guard to collect async
@@ -85,6 +85,13 @@ func main() {
 		return
 	}
 	fmt.Println("result:", option.Unwrap())
+
+	// Have the ability to perform multiple operations at once by grabbing the LockGuard.
+	guard := cache.LockGuard()
+	guard.T.Set("c", "c")
+	guard.T.Set("d", "d")
+	guard.T.Remove("a")
+	guard.Unlock()
 }
 ```
 
