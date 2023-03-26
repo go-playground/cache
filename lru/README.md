@@ -56,7 +56,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Guarding with a Mutex with one operation per interaction semantics.
+	// ThreadSafe cache with one operation per interaction semantics.
 	cache := lru.New[string, string](100).MaxAge(time.Hour).BuildThreadSafe()
 
 	// example of collecting/emitting stats for cache
