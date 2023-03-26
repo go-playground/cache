@@ -15,7 +15,6 @@ func main() {
 	cache := lfu.New[string, string](100).MaxAge(time.Hour).BuildThreadSafe()
 
 	// example of collecting/emitting stats for cache
-	// this does require a mutex guard to collect async
 	go func(ctx context.Context) {
 
 		var ticker = time.NewTicker(time.Minute)

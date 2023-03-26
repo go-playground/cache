@@ -7,6 +7,7 @@ You would typically use an LFU cache when:
 
 - Capacity of cache is far lower than data available.
 - Entries being used are high frequency compared to others over time.
+
 Both above will prevent the most frequently use data from flapping in and out of the cache.
 
 ## Usage
@@ -58,7 +59,6 @@ func main() {
 	cache := lfu.New[string, string](100).MaxAge(time.Hour).BuildThreadSafe()
 
 	// example of collecting/emitting stats for cache
-	// this does require a mutex guard to collect async
 	go func(ctx context.Context) {
 
 		var ticker = time.NewTicker(time.Minute)
@@ -115,7 +115,6 @@ func main() {
 	cache := syncext.NewMutex2(lfu.New[string, string](100).MaxAge(time.Hour).Build())
 
 	// example of collecting/emitting stats for cache
-	// this does require a mutex guard to collect async
 	go func(ctx context.Context) {
 
 		var ticker = time.NewTicker(time.Minute)
