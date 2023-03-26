@@ -56,11 +56,10 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Guarding with a Mutex with one operation per interaction semantics.
-	cache := lru.New[string, string](100).MaxAge(time.Hour).BuildAutoLock()
+	// ThreadSafe cache with one operation per interaction semantics.
+	cache := lru.New[string, string](100).MaxAge(time.Hour).BuildThreadSafe()
 
 	// example of collecting/emitting stats for cache
-	// this does require a mutex guard to collect async
 	go func(ctx context.Context) {
 
 		var ticker = time.NewTicker(time.Minute)
@@ -87,6 +86,13 @@ func main() {
 		return
 	}
 	fmt.Println("result:", option.Unwrap())
+
+	// Have the ability to perform multiple operations at once by grabbing the LockGuard.
+	guard := cache.LockGuard()
+	guard.T.Set("c", "c")
+	guard.T.Set("d", "d")
+	guard.T.Remove("a")
+	guard.Unlock()
 }
 ```
 
@@ -110,7 +116,6 @@ func main() {
 	cache := syncext.NewMutex2(lru.New[string, string](100).MaxAge(time.Hour).Build())
 
 	// example of collecting/emitting stats for cache
-	// this does require a mutex guard to collect async
 	go func(ctx context.Context) {
 
 		var ticker = time.NewTicker(time.Minute)

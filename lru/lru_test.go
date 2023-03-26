@@ -9,6 +9,12 @@ import (
 	"time"
 )
 
+func TestLRUBadConfig(t *testing.T) {
+	PanicMatches(t, func() {
+		New[string, int](3).MaxAge(-time.Hour)
+	}, "MaxAge is not permitted to be a negative value")
+}
+
 func TestLRUBasics(t *testing.T) {
 	c := New[string, int](3).MaxAge(time.Hour).Build()
 	c.Set("1", 1)

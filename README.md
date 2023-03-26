@@ -1,5 +1,5 @@
 # cache
-![Project status](https://img.shields.io/badge/version-0.13.0-green.svg)
+![Project status](https://img.shields.io/badge/version-1.0.0-green.svg)
 [![GoDoc](https://godoc.org/github.com/go-playground/cache?status.svg)](https://pkg.go.dev/github.com/go-playground/cache)
 ![License](https://img.shields.io/dub/l/vibe-d.svg)
 
@@ -10,7 +10,7 @@ Contains multiple in-memory cache implementations including LRU &amp; LFU
 
 ### Contents
 
-Visit linked cache README's via the links below for more details.
+See detailed usage and docs using the links below.
 
 | Cache                | Description                   |
 |----------------------|-------------------------------|
@@ -19,14 +19,16 @@ Visit linked cache README's via the links below for more details.
 
 ### Thread Safety
 
-These caches have the option of being built with no locking, allowing fine grained control of locking scemantics for the caller, and an auto locking option, for when fine grained control is not required.
+These caches have the option of being built with no locking and auto locking guarded via a mutex.
 
-When to control your own locking scemantics:
-- No additional overhead if not needed.
-- If one or more operations are desired to be done at once, which allows caller/locker/user to choose the locking strategy that best suits them. eg. can lock and do two gets and a set before unlocking.
+When to use the no locking option:
+
+- For single threaded code.
+- When you wish control your own locking semantics.
+
 
 When to use auto locking:
-- When only one operation will ever be done at once eg. Get, Set, Remove, ...
+- Ease of use, but still the ability to perform multiple operations using the LockGuard.
 
 #### License
 

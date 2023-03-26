@@ -23,8 +23,13 @@ func New[K comparable, V any](capacity int) *builder[K, V] {
 	}
 }
 
-// MaxAge sets the maximum age of an entry before it should be discarded; passively.
+// MaxAge sets the maximum age of an entry before it will be passively discarded.
+//
+// Default is no max age.
 func (b *builder[K, V]) MaxAge(maxAge time.Duration) *builder[K, V] {
+	if maxAge < 0 {
+		panic("MaxAge is not permitted to be a negative value")
+	}
 	b.lfu.maxAge = int64(maxAge)
 	return b
 }
@@ -33,7 +38,7 @@ func (b *builder[K, V]) MaxAge(maxAge time.Duration) *builder[K, V] {
 func (b *builder[K, V]) Build() (lfu *Cache[K, V]) {
 	lfu = b.lfu
 	b.lfu = nil
-	return lfu
+	return
 }
 
 // BuildThreadSafe finalizes configuration and returns an LRU cache for use guarded by a mutex.
@@ -45,15 +50,33 @@ func (b *builder[K, V]) BuildThreadSafe() ThreadSafeCache[K, V] {
 
 // Stats represents the cache statistics.
 type Stats struct {
-	Capacity, Len                       int
-	Hits, Misses, Evictions, Gets, Sets uint
+	// Capacity is the maximum cache capacity.
+	Capacity int
+
+	// Len is the current consumed cache capacity.
+	Len int
+
+	// Hits is the number of cache hits.
+	Hits uint
+
+	// Misses is the number of cache misses.
+	Misses uint
+
+	// Evictions is the number of cache evictions performed.
+	Evictions uint
+
+	// Gets is the number of cache gets performed regardless of a hit or miss.
+	Gets uint
+
+	// Sets is the number of cache sets performed.
+	Sets uint
 }
 
 type entry[K comparable, V any] struct {
 	key       K
 	value     V
-	ts        int64
 	frequency *listext.Node[frequency[K, V]]
+	timestamp int64
 }
 
 type frequency[K comparable, V any] struct {
@@ -77,7 +100,7 @@ func (cache *Cache[K, V]) Set(key K, value V) {
 	if found {
 		node.Value.value = value
 		if cache.maxAge > 0 {
-			node.Value.ts = timeext.NanoTime()
+			node.Value.timestamp = timeext.NanoTime()
 		}
 		node.Value.frequency.Value.entries.MoveToFront(node)
 	} else {
@@ -96,7 +119,7 @@ func (cache *Cache[K, V]) Set(key K, value V) {
 			frequency: freq,
 		}
 		if cache.maxAge > 0 {
-			e.ts = timeext.NanoTime()
+			e.timestamp = timeext.NanoTime()
 		}
 		cache.entries[key] = freq.Value.entries.PushFront(e)
 		if len(cache.entries) > cache.stats.Capacity {
@@ -124,7 +147,7 @@ func (cache *Cache[K, V]) Get(key K) (result optionext.Option[V]) {
 
 	node, found := cache.entries[key]
 	if found {
-		if cache.maxAge > 0 && timeext.NanoTime()-node.Value.ts > cache.maxAge {
+		if cache.maxAge > 0 && timeext.NanoTime()-node.Value.timestamp > cache.maxAge {
 			cache.remove(node)
 			cache.stats.Evictions++
 		} else {
@@ -185,7 +208,7 @@ func (cache *Cache[K, V]) Clear() {
 	for _, node := range cache.entries {
 		cache.remove(node)
 	}
-	// reset stats
+	// resets/empties stats
 	_ = cache.Stats()
 }
 
