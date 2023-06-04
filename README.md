@@ -14,8 +14,8 @@ See detailed usage and docs using the links below.
 
 | Cache                | Description                   |
 |----------------------|-------------------------------|
-| [LRU](lru/README.md) | A Least recently Used cache.  |
-| [LFU](lfu/README.md) | A Lead Frequently Used cache. |
+| [LRU](lru/README.md) | A Least Recently Used cache.  |
+| [LFU](lfu/README.md) | A Least Frequently Used cache. |
 
 ### Thread Safety
 
