@@ -30,7 +30,7 @@ func (b *builder[K, V]) MaxAge(maxAge time.Duration) *builder[K, V] {
 	if maxAge < 0 {
 		panic("MaxAge is not permitted to be a negative value")
 	}
-	b.lru.maxAge = int64(maxAge)
+	b.lru.maxAge = maxAge
 	return b
 }
 
@@ -75,14 +75,14 @@ type Stats struct {
 type entry[K comparable, V any] struct {
 	key       K
 	value     V
-	timestamp int64
+	timestamp timeext.Instant
 }
 
 // Cache is a configured least recently used cache ready for use.
 type Cache[K comparable, V any] struct {
 	list   *listext.DoublyLinkedList[entry[K, V]]
 	nodes  map[K]*listext.Node[entry[K, V]]
-	maxAge int64
+	maxAge time.Duration
 	stats  Stats
 }
 
@@ -94,7 +94,7 @@ func (cache *Cache[K, V]) Set(key K, value V) {
 	if found {
 		node.Value.value = value
 		if cache.maxAge > 0 {
-			node.Value.timestamp = timeext.NanoTime()
+			node.Value.timestamp = timeext.NewInstant()
 		}
 		cache.list.MoveToFront(node)
 	} else {
@@ -103,7 +103,7 @@ func (cache *Cache[K, V]) Set(key K, value V) {
 			value: value,
 		}
 		if cache.maxAge > 0 {
-			e.timestamp = timeext.NanoTime()
+			e.timestamp = timeext.NewInstant()
 		}
 		cache.nodes[key] = cache.list.PushFront(e)
 		if cache.list.Len() > cache.stats.Capacity {
@@ -121,7 +121,7 @@ func (cache *Cache[K, V]) Get(key K) (result optionext.Option[V]) {
 
 	node, found := cache.nodes[key]
 	if found {
-		if cache.maxAge > 0 && timeext.NanoTime()-node.Value.timestamp > cache.maxAge {
+		if cache.maxAge > 0 && node.Value.timestamp.Elapsed() > cache.maxAge {
 			delete(cache.nodes, key)
 			cache.list.Remove(node)
 			cache.stats.Evictions++
