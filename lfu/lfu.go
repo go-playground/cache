@@ -30,7 +30,7 @@ func (b *builder[K, V]) MaxAge(maxAge time.Duration) *builder[K, V] {
 	if maxAge < 0 {
 		panic("MaxAge is not permitted to be a negative value")
 	}
-	b.lfu.maxAge = int64(maxAge)
+	b.lfu.maxAge = maxAge
 	return b
 }
 
@@ -76,7 +76,7 @@ type entry[K comparable, V any] struct {
 	key       K
 	value     V
 	frequency *listext.Node[frequency[K, V]]
-	timestamp int64
+	timestamp timeext.Instant
 }
 
 type frequency[K comparable, V any] struct {
@@ -88,7 +88,7 @@ type frequency[K comparable, V any] struct {
 type Cache[K comparable, V any] struct {
 	frequencies *listext.DoublyLinkedList[frequency[K, V]]
 	entries     map[K]*listext.Node[entry[K, V]]
-	maxAge      int64
+	maxAge      time.Duration
 	stats       Stats
 }
 
@@ -100,7 +100,7 @@ func (cache *Cache[K, V]) Set(key K, value V) {
 	if found {
 		node.Value.value = value
 		if cache.maxAge > 0 {
-			node.Value.timestamp = timeext.NanoTime()
+			node.Value.timestamp = timeext.NewInstant()
 		}
 		node.Value.frequency.Value.entries.MoveToFront(node)
 	} else {
@@ -119,7 +119,7 @@ func (cache *Cache[K, V]) Set(key K, value V) {
 			frequency: freq,
 		}
 		if cache.maxAge > 0 {
-			e.timestamp = timeext.NanoTime()
+			e.timestamp = timeext.NewInstant()
 		}
 		cache.entries[key] = freq.Value.entries.PushFront(e)
 		if len(cache.entries) > cache.stats.Capacity {
@@ -147,7 +147,7 @@ func (cache *Cache[K, V]) Get(key K) (result optionext.Option[V]) {
 
 	node, found := cache.entries[key]
 	if found {
-		if cache.maxAge > 0 && timeext.NanoTime()-node.Value.timestamp > cache.maxAge {
+		if cache.maxAge > 0 && node.Value.timestamp.Elapsed() > cache.maxAge {
 			cache.remove(node)
 			cache.stats.Evictions++
 		} else {
