@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated dependencies.
 - Changed to use new timeext.Instant type for better code readability & maintenance.
 
+### Fixed
+- Spelling in README.
+
 ## [1.0.0] - 2023-03-26
 ### Changed
 - Updated docs & examples.
