@@ -288,14 +288,14 @@ func TestSizeHintAvoidsResize(t *testing.T) {
 func TestBucketsForIsMinimal(t *testing.T) {
 	for _, hint := range []int{-5, 0, 1, 14, 15, 16, 31, 1000, 1 << 20} {
 		n := bucketsFor(hint)
-		if n&(n-1) != 0 || n < minBuckets {
-			t.Fatalf("bucketsFor(%d) = %d, want a power of two >= %d", hint, n, minBuckets)
+		if n < minBuckets {
+			t.Fatalf("bucketsFor(%d) = %d, want >= %d", hint, n, minBuckets)
 		}
 		if threshold := n * slotsPerBucket * loadNum / loadDen; threshold < hint {
 			t.Fatalf("bucketsFor(%d) = %d holds only %d before resizing", hint, n, threshold)
 		}
-		if half := n / 2; half >= minBuckets && half*slotsPerBucket*loadNum/loadDen >= hint {
-			t.Fatalf("bucketsFor(%d) = %d, but %d buckets suffice", hint, n, half)
+		if fewer := n - 1; fewer >= minBuckets && fewer*slotsPerBucket*loadNum/loadDen >= hint {
+			t.Fatalf("bucketsFor(%d) = %d, but %d buckets suffice", hint, n, fewer)
 		}
 	}
 }
@@ -360,6 +360,69 @@ func TestHotPathsDoNotAllocate(t *testing.T) {
 	for name, fn := range cases {
 		if a := testing.AllocsPerRun(1000, fn); a != 0 {
 			t.Errorf("%s allocates %v times per call, want 0", name, a)
+		}
+	}
+}
+
+// TestBoundedGrowthStopsExactlyAtCapacity checks a bounded table ends sized exactly for its bound, with a final growth
+// step smaller than doubling, and never grows past it.
+func TestBoundedGrowthStopsExactlyAtCapacity(t *testing.T) {
+	const capacity = 100_000
+	tbl := NewBounded[int, int](1000, capacity)
+	seed := maphash.MakeSeed()
+	for i := range 2 * capacity {
+		tbl.Store(node.New(i, i, maphash.Comparable(seed, i), 1))
+	}
+	if got, want := tbl.Buckets(), bucketsFor(capacity); got != want {
+		t.Fatalf("buckets = %d, want exactly %d", got, want)
+	}
+	for i := range 2 * capacity {
+		if n := tbl.Get(maphash.Comparable(seed, i), i); n == nil || n.Value != i {
+			t.Fatalf("key %d lost across bounded growth", i)
+		}
+	}
+}
+
+// TestNonDoublingGrowthWithCollidingHashes exercises the copy when one old chain feeds several new roots, including
+// every key sharing one hash.
+func TestNonDoublingGrowthWithCollidingHashes(t *testing.T) {
+	for name, hash := range map[string]func(int) uint64{
+		"constant": func(int) uint64 { return 0xdeadbeef },
+		"weak":     func(k int) uint64 { return uint64(k & 7) },
+		"spread":   func(k int) uint64 { return uint64(k) * 0x9E3779B97F4A7C15 },
+	} {
+		tbl := NewBounded[int, int](10, 3000)
+		for i := range 5000 {
+			tbl.Store(node.New(i, i, hash(i), 1))
+		}
+		for i := range 5000 {
+			if n := tbl.Get(hash(i), i); n == nil || n.Value != i {
+				t.Fatalf("%s: key %d lost", name, i)
+			}
+		}
+		if tbl.Len() != 5000 {
+			t.Fatalf("%s: len %d", name, tbl.Len())
+		}
+	}
+}
+
+func TestScanCyclesThroughEveryNode(t *testing.T) {
+	tbl := New[int, int](0)
+	for i := range 1000 {
+		tbl.Store(node.New(i, i, uint64(i)*0x9E3779B97F4A7C15, 1))
+	}
+	seen := map[int]int{}
+	cursor := uint64(12345)
+	for range tbl.Buckets() / 7 {
+		cursor = tbl.Scan(cursor, 7, func(n *node.Node[int, int]) { seen[n.Key]++ })
+	}
+	tbl.Scan(cursor, tbl.Buckets()%7, func(n *node.Node[int, int]) { seen[n.Key]++ })
+	if len(seen) != 1000 {
+		t.Fatalf("one full cycle visited %d distinct nodes, want 1000", len(seen))
+	}
+	for k, c := range seen {
+		if c != 1 {
+			t.Fatalf("node %d visited %d times in one cycle", k, c)
 		}
 	}
 }

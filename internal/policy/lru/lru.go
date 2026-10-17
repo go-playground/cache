@@ -18,7 +18,7 @@ type Policy[K comparable, V any] struct {
 
 // New returns an LRU policy retaining at most capacity weight.
 func New[K comparable, V any](capacity uint64) *Policy[K, V] {
-	return &Policy[K, V]{q: deque.New[K, V](node.PolicyList), capacity: capacity}
+	return &Policy[K, V]{q: deque.New[K, V](), capacity: capacity}
 }
 
 // Add tracks n as the most recently used node, then evicts least recently used nodes until within capacity.

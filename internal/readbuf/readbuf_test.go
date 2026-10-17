@@ -1,6 +1,7 @@
 package readbuf
 
 import (
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -24,7 +25,7 @@ func TestAddThenDrainReturnsEveryAddedEvent(t *testing.T) {
 }
 
 func TestStripeReportsFullWhenSaturated(t *testing.T) {
-	b := &Buffer[int]{stripes: make([]ring[int], 1), mask: 0}
+	b := New[int]() // starts with a single stripe
 	v := 1
 	for range ringSize {
 		if res := b.Add(&v); res != Added {
@@ -92,6 +93,43 @@ func TestConcurrentProducersNeverDuplicateOrInventEvents(t *testing.T) {
 
 	if drained != added.Load() {
 		t.Fatalf("drained %d events but %d were added", drained, added.Load())
+	}
+}
+
+func TestSingleProducerNeverGrows(t *testing.T) {
+	b := New[int]()
+	v := 1
+	for range 100_000 {
+		if b.Add(&v) == Full {
+			b.Drain(func(*int) {})
+		}
+	}
+	if b.Stripes() != 1 {
+		t.Fatalf("uncontended buffer grew to %d stripes", b.Stripes())
+	}
+}
+
+func TestContentionGrowsStripesUpToProcessors(t *testing.T) {
+	b := New[int]()
+	v := 1
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for range 4 * runtime.GOMAXPROCS(0) {
+		wg.Go(func() {
+			for range 50_000 {
+				if b.Add(&v) == Full && mu.TryLock() {
+					b.Drain(func(*int) {})
+					mu.Unlock()
+				}
+			}
+		})
+	}
+	wg.Wait()
+	if runtime.GOMAXPROCS(0) > 1 && b.Stripes() == 1 {
+		t.Fatal("contended buffer never grew")
+	}
+	if b.Stripes() > b.maxStripes {
+		t.Fatalf("grew to %d stripes, max %d", b.Stripes(), b.maxStripes)
 	}
 }
 

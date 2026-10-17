@@ -49,6 +49,12 @@ func (q *Queue[T]) init(n uint64) {
 
 // Enqueue adds v, reporting false if the queue is full. Safe for concurrent producers.
 func (q *Queue[T]) Enqueue(v T) bool {
+	ok, _ := q.enqueue(v)
+	return ok
+}
+
+// enqueue adds v, reporting whether it succeeded and whether it had to retry because of a concurrent producer.
+func (q *Queue[T]) enqueue(v T) (ok, contended bool) {
 	pos := q.tail.Load()
 	for {
 		s := &q.buf[pos&q.mask]
@@ -58,12 +64,14 @@ func (q *Queue[T]) Enqueue(v T) bool {
 			if q.tail.CompareAndSwap(pos, pos+1) {
 				s.val = v
 				s.seq.Store(pos + 1)
-				return true
+				return true, contended
 			}
+			contended = true
 			pos = q.tail.Load()
 		case diff < 0:
-			return false
+			return false, contended
 		default:
+			contended = true
 			pos = q.tail.Load()
 		}
 	}
@@ -85,11 +93,14 @@ func (q *Queue[T]) Dequeue() (v T, ok bool) {
 
 // Striped is a set of per-processor queues, so concurrent producers rarely contend on the same tail.
 //
-// Items from different producers may be dequeued in any order relative to each other, and a goroutine migrating
-// between processors may see its own items reordered; consumers must tolerate reordering.
+// It starts with a single queue and doubles, up to one queue per processor, only when producers actually collide.
+// Items from different queues may be dequeued in any order relative to each other, and a goroutine migrating between
+// processors may see its own items reordered; consumers must tolerate reordering.
 type Striped[T any] struct {
-	stripes []paddedQueue[T]
-	mask    uint32
+	stripes    atomic.Pointer[[]*paddedQueue[T]]
+	growing    atomic.Bool
+	perStripe  uint64
+	maxStripes int
 }
 
 type paddedQueue[T any] struct {
@@ -97,28 +108,62 @@ type paddedQueue[T any] struct {
 	_ [xruntime.CacheLine]byte
 }
 
-// NewStriped creates one queue of perStripe capacity per processor, rounded up to a power of two.
+// NewStriped creates one queue of perStripe capacity, rounded up to a power of two, that may grow to
+// nextPow2(GOMAXPROCS) queues.
 func NewStriped[T any](perStripe int) *Striped[T] {
-	n := uint32(1)
-	for n < uint32(runtime.GOMAXPROCS(0)) {
+	n := 1
+	for n < runtime.GOMAXPROCS(0) {
 		n <<= 1
 	}
-	s := &Striped[T]{stripes: make([]paddedQueue[T], n), mask: n - 1}
-	for i := range s.stripes {
-		s.stripes[i].init(pow2(perStripe))
-	}
+	s := &Striped[T]{perStripe: pow2(perStripe), maxStripes: n}
+	stripes := []*paddedQueue[T]{s.newQueue()}
+	s.stripes.Store(&stripes)
 	return s
+}
+
+func (s *Striped[T]) newQueue() *paddedQueue[T] {
+	q := &paddedQueue[T]{}
+	q.init(s.perStripe)
+	return q
 }
 
 // Enqueue adds v to the calling processor's queue, reporting false if it is full. Safe for concurrent producers.
 func (s *Striped[T]) Enqueue(v T) bool {
-	return s.stripes[uint32(xruntime.Pid())&s.mask].Enqueue(v)
+	stripes := *s.stripes.Load()
+	ok, contended := stripes[xruntime.Pid()&(len(stripes)-1)].enqueue(v)
+	if contended {
+		s.grow(len(stripes))
+	}
+	return ok
+}
+
+// grow doubles the queues after contention was observed with seen queues. Existing queues are carried over, so items
+// enqueued through the previous slice are still drained.
+func (s *Striped[T]) grow(seen int) {
+	if seen >= s.maxStripes || !s.growing.CompareAndSwap(false, true) {
+		return
+	}
+	defer s.growing.Store(false)
+	cur := *s.stripes.Load()
+	if len(cur) != seen {
+		return
+	}
+	next := make([]*paddedQueue[T], 2*seen)
+	copy(next, cur)
+	for i := seen; i < len(next); i++ {
+		next[i] = s.newQueue()
+	}
+	s.stripes.Store(&next)
+}
+
+// Stripes returns the current number of queues.
+func (s *Striped[T]) Stripes() int {
+	return len(*s.stripes.Load())
 }
 
 // Drain dequeues every published item from every queue, calling fn for each. One consumer at a time.
 func (s *Striped[T]) Drain(fn func(T)) {
-	for i := range s.stripes {
-		q := &s.stripes[i].Queue
+	for _, q := range *s.stripes.Load() {
 		for {
 			v, ok := q.Dequeue()
 			if !ok {

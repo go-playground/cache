@@ -5,82 +5,101 @@ import (
 	"testing"
 )
 
-func ghostHashes(g *ghost) []uint64 {
-	var hs []uint64
-	for i := g.head; i != none; i = g.e[i].next {
-		hs = append(hs, g.e[i].hash)
+// encoded returns the ghost's occupied slots as sorted (slot<<32 | fingerprint) values, its observable state.
+func (g *ghost) encoded() []uint64 {
+	var out []uint64
+	for i, fp := range g.slots {
+		if fp != 0 {
+			out = append(out, uint64(i)<<32|uint64(fp))
+		}
 	}
-	return hs
+	return out
 }
 
-func assertGhost(t *testing.T, g *ghost, want ...uint64) {
-	t.Helper()
-	if got := ghostHashes(g); !slices.Equal(got, want) {
-		t.Fatalf("ghost %v, want %v", got, want)
+// ghostOf returns the encoding of a ghost sized like p's after pushing hashes in order.
+func ghostOf(p *Policy[int, int], hashes ...uint64) []uint64 {
+	g := ghost{slots: make([]uint32, len(p.ghost.slots)), mask: p.ghost.mask}
+	for _, h := range hashes {
+		g.slots[h&g.mask] = fingerprint(h)
 	}
-	checkGhost(t, g)
+	return g.encoded()
 }
 
-func TestGhostTrimsOldestFirst(t *testing.T) {
-	g := newGhost()
-	for h := range uint64(5) {
-		g.push(h, 3)
+func TestGhostRemembersAndForgets(t *testing.T) {
+	var g ghost
+	if g.remove(1) {
+		t.Fatal("empty ghost must not remember anything")
 	}
-	assertGhost(t, &g, 2, 3, 4)
-	g.push(5, 1)
-	assertGhost(t, &g, 5)
-}
-
-func TestGhostRemoveReportsMembership(t *testing.T) {
-	g := newGhost()
-	g.push(1, 4)
-	g.push(2, 4)
-	g.push(3, 4)
-	if !g.remove(2) {
-		t.Fatal("2 not found")
+	g.push(0x1111, 8)
+	g.push(0x2222, 8)
+	if !g.remove(0x1111) || g.remove(0x1111) {
+		t.Fatal("remove must report a remembered hash exactly once")
 	}
-	if g.remove(2) || g.remove(9) {
-		t.Fatal("removed absent hash")
-	}
-	assertGhost(t, &g, 1, 3)
-}
-
-func TestGhostRemovesOldestOccurrenceOfDuplicates(t *testing.T) {
-	g := newGhost()
-	for _, h := range []uint64{7, 1, 7, 2, 7} {
-		g.push(h, 10)
-	}
-	g.remove(7)
-	assertGhost(t, &g, 1, 7, 2, 7)
-	g.remove(7)
-	assertGhost(t, &g, 1, 2, 7)
-	g.push(3, 2)
-	assertGhost(t, &g, 7, 3)
-	if !g.remove(7) || g.remove(7) {
-		t.Fatal("expected exactly one remaining occurrence of 7")
+	if !g.remove(0x2222) {
+		t.Fatal("other hashes must be unaffected")
 	}
 }
 
-func TestGhostReusesFreedEntries(t *testing.T) {
-	g := newGhost()
-	for h := range uint64(1000) {
-		g.push(h, 4)
+func TestGhostCollisionOverwritesOlder(t *testing.T) {
+	var g ghost
+	g.push(0x10, 4)
+	g.push(0x20, 4) // same slot, different fingerprint
+	if g.remove(0x10) {
+		t.Fatal("older colliding ghost must have been overwritten")
 	}
-	if len(g.e) > 5 {
-		t.Fatalf("arena grew to %d entries for a ghost of 4", len(g.e))
+	if !g.remove(0x20) {
+		t.Fatal("newer colliding ghost must be remembered")
 	}
-	assertGhost(t, &g, 996, 997, 998, 999)
+}
+
+func TestGhostDistinguishesHashesSharingASlot(t *testing.T) {
+	var g ghost
+	g.push(42, 1)
+	if g.remove(7) {
+		t.Fatal("a different hash in the same slot must not match")
+	}
+}
+
+func TestGhostGrowsToTrackedCountAndStartsOver(t *testing.T) {
+	var g ghost
+	g.push(1, 3)
+	if len(g.slots) != 4 {
+		t.Fatalf("size %d, want nextPow2(3) = 4", len(g.slots))
+	}
+	g.push(2, 2)
+	if len(g.slots) != 4 {
+		t.Fatal("ghost must never shrink")
+	}
+	g.push(3, 5)
+	if len(g.slots) != 8 || g.remove(1) || g.remove(2) || !g.remove(3) {
+		t.Fatal("growing must start over with only the new hash")
+	}
 }
 
 func TestGhostReset(t *testing.T) {
-	g := newGhost()
+	var g ghost
 	g.push(1, 4)
-	g.push(2, 4)
 	g.reset()
-	assertGhost(t, &g)
-	if g.remove(1) {
-		t.Fatal("reset ghost still contains 1")
+	if len(g.slots) != 4 || len(g.encoded()) != 0 {
+		t.Fatal("reset must forget everything but keep the table")
 	}
-	g.push(3, 4)
-	assertGhost(t, &g, 3)
+}
+
+func TestGhostIsFourBytesPerSlotAndAllocationFree(t *testing.T) {
+	var g ghost
+	g.push(1, 1024)
+	if cap(g.slots) != 1024 {
+		t.Fatalf("cap %d", cap(g.slots))
+	}
+	h := uint64(0)
+	if allocs := testing.AllocsPerRun(1000, func() {
+		h += 0x9E3779B97F4A7C15
+		g.push(h, 1024)
+		g.remove(h)
+	}); allocs != 0 {
+		t.Fatalf("steady state allocated %v times", allocs)
+	}
+	if !slices.Equal(g.encoded(), nil) {
+		t.Fatal("expected empty after paired push/remove")
+	}
 }

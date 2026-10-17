@@ -46,12 +46,12 @@ func checkQueue(t testing.TB, p *Policy[int, int], q uint32, seen map[*testNode]
 	var prev *testNode
 	var w uint64
 	n := 0
-	for x := d.Front(); x != nil; x = x.Next(node.PolicyList) {
-		if x.Prev(node.PolicyList) != prev {
+	for x := d.Front(); x != nil; x = x.Next() {
+		if x.Prev() != prev {
 			t.Fatalf("queue %d key %d: broken prev link", q, x.Key)
 		}
-		if x.Slot != q {
-			t.Fatalf("queue %d key %d: slot %d", q, x.Key, x.Slot)
+		if x.Slot() != q {
+			t.Fatalf("queue %d key %d: slot %d", q, x.Key, x.Slot())
 		}
 		if seen[x] {
 			t.Fatalf("key %d linked twice", x.Key)
@@ -88,7 +88,7 @@ func checkSizing(t testing.TB, p *Policy[int, int]) {
 // queueKeys returns the keys of queue q from front to back.
 func queueKeys(p *Policy[int, int], q uint32) []int {
 	var keys []int
-	for x := p.queues[q].Front(); x != nil; x = x.Next(node.PolicyList) {
+	for x := p.queues[q].Front(); x != nil; x = x.Next() {
 		keys = append(keys, x.Key)
 	}
 	return keys

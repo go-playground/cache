@@ -19,7 +19,6 @@ import (
 	optionext "github.com/go-playground/pkg/v5/values/option"
 
 	"github.com/go-playground/cache/v2/internal/counter"
-	"github.com/go-playground/cache/v2/internal/expiry"
 	"github.com/go-playground/cache/v2/internal/node"
 	"github.com/go-playground/cache/v2/internal/policy"
 	"github.com/go-playground/cache/v2/internal/readbuf"
@@ -43,8 +42,17 @@ const maxDrainRounds = 4
 // eagerly for a capacity that may be used to mean "practically unbounded".
 const maxPresize = 1 << 16
 
-// writeStripeSize is each processor's write buffer capacity; a full stripe makes its writer drain synchronously.
+// writeStripeSize is each write buffer stripe's capacity; a full stripe makes its writer drain synchronously. Smaller
+// stripes (32, 64) measured 15-40% slower on concurrent writes, and stripes are only added under contention.
 const writeStripeSize = 128
+
+// Sweep pacing: at most one sweep per sweepInterval of maintenance, each scanning sweepBuckets root buckets per round
+// for up to sweepMaxRounds rounds.
+const (
+	sweepInterval  = int64(time.Millisecond)
+	sweepBuckets   = 32
+	sweepMaxRounds = 8
+)
 
 // accessGranularity bounds how often expire-after-access readers write a node's expiry, avoiding a shared write on
 // every read of a hot key at the cost of up to this much expiry precision.
@@ -84,7 +92,6 @@ type Engine[K comparable, V any] struct {
 	inline   policy.InlineAccessor[K, V]
 	reads    *readbuf.Buffer[node.Node[K, V]]
 	writes   *writebuf.Striped[task[K, V]]
-	tracker  expiry.Tracker[K, V]
 	capacity uint64
 	weigher  func(K, V) uint32
 
@@ -96,10 +103,10 @@ type Engine[K comparable, V any] struct {
 	onEviction func(K, V, Cause)
 	stats      *stats
 
-	onEvictFn  policy.EvictFunc[K, V]
-	onExpireFn func(*node.Node[K, V])
-	onReadFn   func(*node.Node[K, V])
-	applyFn    func(task[K, V])
+	onEvictFn policy.EvictFunc[K, V]
+	onSweepFn func(*node.Node[K, V])
+	onReadFn  func(*node.Node[K, V])
+	applyFn   func(task[K, V])
 
 	// Everything above is read-mostly and read by every operation; everything below is written during maintenance.
 	// The padding keeps them on separate cache lines so maintenance does not invalidate readers' cached copies.
@@ -112,6 +119,12 @@ type Engine[K comparable, V any] struct {
 	pending   Evictions[K, V]
 	evictions uint64
 	drainNow  int64
+
+	// Sweep state, owned under mu.
+	sweepCursor  uint64
+	nextSweep    int64
+	sweepSeen    int
+	sweepExpired int
 }
 
 type stats struct {
@@ -125,7 +138,7 @@ func NewEngine[K comparable, V any](cfg Config[K, V]) *Engine[K, V] {
 	}
 	e := &Engine[K, V]{
 		hasher:     xhash.New[K](),
-		table:      table.New[K, V](tableSizeHint(cfg)),
+		table:      newTable(cfg),
 		policy:     cfg.newPolicy(cfg.capacity),
 		writes:     writebuf.NewStriped[task[K, V]](writeStripeSize),
 		capacity:   cfg.capacity,
@@ -141,12 +154,11 @@ func NewEngine[K comparable, V any](cfg Config[K, V]) *Engine[K, V] {
 	} else {
 		e.reads = readbuf.New[node.Node[K, V]]()
 	}
-	e.tracker = e.newTracker()
 	if cfg.recordStats {
 		e.stats = &stats{counter.New(), counter.New(), counter.New(), counter.New(), counter.New()}
 	}
 	e.onEvictFn = e.onEvict
-	e.onExpireFn = e.onExpire
+	e.onSweepFn = e.onSweep
 	e.onReadFn = e.onRead
 	e.applyFn = e.apply
 	return e
@@ -156,32 +168,18 @@ func clock() int64 {
 	return int64(timeext.NewInstant())
 }
 
-func tableSizeHint[K comparable, V any](cfg Config[K, V]) int {
+// newTable presizes the table for up to maxPresize entries and, for unweighted caches whose capacity is an entry
+// count, bounds its growth to exactly what capacity needs.
+func newTable[K comparable, V any](cfg Config[K, V]) *table.Table[K, V] {
 	if cfg.weigher != nil {
-		return 0
+		return table.New[K, V](0)
 	}
-	return int(min(cfg.capacity, maxPresize))
-}
-
-func (e *Engine[K, V]) newTracker() expiry.Tracker[K, V] {
-	switch e.expiryMode {
-	case expireAfterWrite:
-		return expiry.NewWriteOrder[K, V]()
-	case expireAfterAccess:
-		return expiry.NewAccessOrder[K, V]()
-	case expireCustom:
-		return expiry.NewWheel[K, V](e.now())
-	default:
-		return noTracker[K, V]{}
-	}
+	return table.NewBounded[K, V](int(min(cfg.capacity, maxPresize)), int(min(cfg.capacity, math.MaxInt32)))
 }
 
 // SetClockForTesting replaces the monotonic clock. Only for tests, before any use of the engine.
 func (e *Engine[K, V]) SetClockForTesting(now func() int64) {
 	e.now = now
-	if e.expiryMode == expireCustom {
-		e.tracker = expiry.NewWheel[K, V](now())
-	}
 }
 
 // Hash returns the hash of k used by every hashed method.
@@ -325,10 +323,9 @@ func (e *Engine[K, V]) Clear() {
 			return true
 		})
 		e.policy.Clear(func(n *node.Node[K, V]) {
-			n.InPolicy = false
+			n.SetInPolicy(false)
 			n.Die()
 		})
-		e.tracker.Clear()
 	}))
 }
 
@@ -381,9 +378,14 @@ func (e *Engine[K, V]) recordMiss() {
 	}
 }
 
-// Drain synchronously applies all pending maintenance. Used by tests for determinism.
+// Drain synchronously applies all pending maintenance and reclaims every expired entry. Used by tests for
+// determinism.
 func (e *Engine[K, V]) Drain() {
-	e.Notify(e.locked(nil))
+	e.Notify(e.locked(func() {
+		if e.expiryMode != expireNever {
+			e.sweepCursor = e.table.Scan(e.sweepCursor, e.table.Buckets(), e.onSweepFn)
+		}
+	}))
 }
 
 // Notify delivers eviction notifications. Must be called without holding any cache lock.
@@ -465,9 +467,41 @@ func (e *Engine[K, V]) maintenance() {
 	}
 	e.drainWrites()
 	if e.expiryMode != expireNever {
-		e.tracker.Expire(e.drainNow, e.onExpireFn)
+		e.sweep()
 	}
 	e.status.CompareAndSwap(drainProcessing, drainIdle)
+}
+
+// sweep reclaims expired entries incrementally, Redis style. Expired entries are never returned regardless; sweeping
+// only frees their capacity sooner. Checking an entry is a likely cache miss, so sweeps run at most once per
+// sweepInterval and scan a bounded run of buckets from a persistent cursor, continuing for more rounds only while a
+// round finds at least a quarter of its entries expired.
+func (e *Engine[K, V]) sweep() {
+	if e.drainNow < e.nextSweep {
+		return
+	}
+	e.nextSweep = e.drainNow + sweepInterval
+	for range sweepMaxRounds {
+		e.sweepSeen, e.sweepExpired = 0, 0
+		e.sweepCursor = e.table.Scan(e.sweepCursor, sweepBuckets, e.onSweepFn)
+		if e.sweepSeen > 0 && e.sweepExpired*4 < e.sweepSeen {
+			return
+		}
+	}
+}
+
+// onSweep reclaims n if it has expired. A node not yet tracked by the policy dies here and its pending add is skipped.
+func (e *Engine[K, V]) onSweep(n *node.Node[K, V]) {
+	e.sweepSeen++
+	if !n.IsExpired(e.drainNow) || !n.IsAlive() {
+		return
+	}
+	e.sweepExpired++
+	if n.InPolicy() {
+		e.policy.Remove(n)
+		n.SetInPolicy(false)
+	}
+	e.unmap(n, CauseExpired)
 }
 
 func (e *Engine[K, V]) drainWrites() {
@@ -492,18 +526,15 @@ func (e *Engine[K, V]) add(n *node.Node[K, V]) {
 		n.Die()
 		return
 	}
-	if n.InPolicy {
+	if n.InPolicy() {
 		return
 	}
-	n.InPolicy = true
+	n.SetInPolicy(true)
 	e.policy.Add(n, e.onEvictFn)
-	if n.InPolicy {
-		e.tracker.Add(n)
-	}
 }
 
 func (e *Engine[K, V]) update(old, n *node.Node[K, V]) {
-	if !old.InPolicy {
+	if !old.InPolicy() {
 		old.Die()
 		e.add(n)
 		return
@@ -512,50 +543,31 @@ func (e *Engine[K, V]) update(old, n *node.Node[K, V]) {
 		e.remove(old)
 		return
 	}
-	n.InPolicy = true
-	old.InPolicy = false
+	n.SetInPolicy(true)
+	old.SetInPolicy(false)
 	e.policy.Update(old, n, e.onEvictFn)
 	old.Die()
-	if n.InPolicy {
-		e.tracker.Update(old, n)
-		return
-	}
-	e.tracker.Remove(old)
 }
 
 func (e *Engine[K, V]) remove(n *node.Node[K, V]) {
-	if n.InPolicy {
+	if n.InPolicy() {
 		e.policy.Remove(n)
-		n.InPolicy = false
-		e.tracker.Remove(n)
+		n.SetInPolicy(false)
 	}
 	n.Die()
 }
 
 func (e *Engine[K, V]) onRead(n *node.Node[K, V]) {
-	if !n.InPolicy || !n.IsAlive() {
+	if !n.InPolicy() || !n.IsAlive() {
 		return
 	}
 	e.policy.Access(n)
-	if !n.IsExpired(e.drainNow) {
-		e.tracker.Access(n)
-	}
 }
 
 // onEvict handles a node the policy has already unlinked.
 func (e *Engine[K, V]) onEvict(n *node.Node[K, V]) {
-	n.InPolicy = false
-	e.tracker.Remove(n)
+	n.SetInPolicy(false)
 	e.unmap(n, CauseSize)
-}
-
-// onExpire handles a node the tracker has already unlinked.
-func (e *Engine[K, V]) onExpire(n *node.Node[K, V]) {
-	if n.InPolicy {
-		e.policy.Remove(n)
-		n.InPolicy = false
-	}
-	e.unmap(n, CauseExpired)
 }
 
 // unmap removes n from the table if it is still mapped and records the eviction. When n is no longer mapped it was
@@ -575,12 +587,3 @@ func (e *Engine[K, V]) takePending() Evictions[K, V] {
 	e.pending = nil
 	return evs
 }
-
-type noTracker[K comparable, V any] struct{}
-
-func (noTracker[K, V]) Add(*node.Node[K, V])                   {}
-func (noTracker[K, V]) Access(*node.Node[K, V])                {}
-func (noTracker[K, V]) Update(_, _ *node.Node[K, V])           {}
-func (noTracker[K, V]) Remove(*node.Node[K, V])                {}
-func (noTracker[K, V]) Expire(int64, func(n *node.Node[K, V])) {}
-func (noTracker[K, V]) Clear()                                 {}

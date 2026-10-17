@@ -70,7 +70,7 @@ func (p *Policy[K, V]) Update(old, n *node.Node[K, V], evict policy.EvictFunc[K,
 	r := p.find(old)
 	p.b[r].q.Replace(old, n)
 	p.b[r].q.MoveToFront(n)
-	n.Slot = uint32(r)
+	n.SetSlot(uint32(r))
 	p.weight -= uint64(old.Weight)
 	p.weight += uint64(n.Weight)
 	if p.rejects(n) {

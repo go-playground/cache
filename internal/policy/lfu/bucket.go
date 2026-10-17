@@ -8,7 +8,7 @@ import (
 // none is the nil arena index.
 const none int32 = -1
 
-// bucket is an arena entry acting as a label which node.Node.Slot refers to.
+// bucket is an arena entry acting as a label which node.Node.Slot() refers to.
 //
 // A root label (parent == itself) is a live frequency bucket linked into the frequency list via prev and next.
 // A forwarding label has been merged into another bucket during aging; its deque is empty and parent leads towards
@@ -34,7 +34,7 @@ func (p *Policy[K, V]) alloc(freq uint32) int32 {
 	} else {
 		p.free = p.b[i].next
 	}
-	p.b[i] = bucket[K, V]{q: deque.New[K, V](node.PolicyList), freq: freq, prev: none, next: none, parent: i}
+	p.b[i] = bucket[K, V]{q: deque.New[K, V](), freq: freq, prev: none, next: none, parent: i}
 	return i
 }
 
@@ -95,13 +95,13 @@ func (p *Policy[K, V]) release(l int32) {
 
 // attach points n at the root bucket r.
 func (p *Policy[K, V]) attach(n *node.Node[K, V], r int32) {
-	n.Slot = uint32(r)
+	n.SetSlot(uint32(r))
 	p.b[r].refs++
 }
 
-// find returns the root bucket holding n, repointing n.Slot directly at it.
+// find returns the root bucket holding n, repointing n.Slot() directly at it.
 func (p *Policy[K, V]) find(n *node.Node[K, V]) int32 {
-	l := int32(n.Slot)
+	l := int32(n.Slot())
 	r := l
 	for p.b[r].parent != r {
 		r = p.b[r].parent

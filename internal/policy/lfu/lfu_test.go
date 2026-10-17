@@ -55,7 +55,7 @@ func contents(p *Policy[int, int]) []level {
 	var levels []level
 	for i := p.head; i != none; i = p.b[i].next {
 		l := level{freq: p.b[i].freq}
-		for n := p.b[i].q.Front(); n != nil; n = n.Next(node.PolicyList) {
+		for n := p.b[i].q.Front(); n != nil; n = n.Next() {
 			l.keys = append(l.keys, n.Key)
 		}
 		levels = append(levels, l)
@@ -127,19 +127,19 @@ func checkBucket(t testing.TB, p *Policy[int, int], i int32, nodes map[*node.Nod
 	var weight uint64
 	var prev *node.Node[int, int]
 	count := 0
-	for n := p.b[i].q.Front(); n != nil; n = n.Next(node.PolicyList) {
+	for n := p.b[i].q.Front(); n != nil; n = n.Next() {
 		switch {
 		case nodes[n]:
 			t.Fatalf("node %d reachable twice", n.Key)
-		case n.Prev(node.PolicyList) != prev:
+		case n.Prev() != prev:
 			t.Fatalf("node %d prev link asymmetric", n.Key)
-		case int(n.Slot) >= len(p.b) || rootOf(t, p, int32(n.Slot)) != i:
-			t.Fatalf("node %d slot %d does not resolve to bucket %d", n.Key, n.Slot, i)
+		case int(n.Slot()) >= len(p.b) || rootOf(t, p, int32(n.Slot())) != i:
+			t.Fatalf("node %d slot %d does not resolve to bucket %d", n.Key, n.Slot(), i)
 		case p.capacity == 0 || uint64(n.Weight) > p.capacity:
 			t.Fatalf("node %d with weight %d retained at capacity %d", n.Key, n.Weight, p.capacity)
 		}
 		nodes[n] = true
-		refs[n.Slot]++
+		refs[n.Slot()]++
 		weight += uint64(n.Weight)
 		prev = n
 		count++
@@ -408,7 +408,7 @@ func TestMergedLabelsForwardAndAreFreed(t *testing.T) {
 	p.Access(nodes[3])
 	p.age()
 	assertLevels(t, p, level{1, []int{3, 2, 1}})
-	if nodes[1].Slot == nodes[2].Slot {
+	if nodes[1].Slot() == nodes[2].Slot() {
 		t.Fatal("expected merge to leave one side forwarding")
 	}
 	p.Access(nodes[1])

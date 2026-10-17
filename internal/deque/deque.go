@@ -1,6 +1,6 @@
-// Package deque is an intrusive, allocation free, doubly linked list over node.Node using one of its link sets.
+// Package deque is an intrusive, allocation free, doubly linked list over node.Node's links.
 //
-// A node may be in at most one deque per link set at a time. Not safe for concurrent use.
+// A node may be in at most one deque at a time. Not safe for concurrent use.
 package deque
 
 import "github.com/go-playground/cache/v2/internal/node"
@@ -9,12 +9,11 @@ import "github.com/go-playground/cache/v2/internal/node"
 type Deque[K comparable, V any] struct {
 	head, tail *node.Node[K, V]
 	len        int
-	list       node.List
 }
 
-// New returns an empty deque using the given link set.
-func New[K comparable, V any](list node.List) Deque[K, V] {
-	return Deque[K, V]{list: list}
+// New returns an empty deque. The zero value is also an empty deque.
+func New[K comparable, V any]() Deque[K, V] {
+	return Deque[K, V]{}
 }
 
 // Len returns the number of nodes in the deque.
@@ -34,12 +33,12 @@ func (d *Deque[K, V]) Back() *node.Node[K, V] {
 
 // PushFront links n at the front.
 func (d *Deque[K, V]) PushFront(n *node.Node[K, V]) {
-	n.SetPrev(d.list, nil)
-	n.SetNext(d.list, d.head)
+	n.SetPrev(nil)
+	n.SetNext(d.head)
 	if d.head == nil {
 		d.tail = n
 	} else {
-		d.head.SetPrev(d.list, n)
+		d.head.SetPrev(n)
 	}
 	d.head = n
 	d.len++
@@ -47,12 +46,12 @@ func (d *Deque[K, V]) PushFront(n *node.Node[K, V]) {
 
 // PushBack links n at the back.
 func (d *Deque[K, V]) PushBack(n *node.Node[K, V]) {
-	n.SetNext(d.list, nil)
-	n.SetPrev(d.list, d.tail)
+	n.SetNext(nil)
+	n.SetPrev(d.tail)
 	if d.tail == nil {
 		d.head = n
 	} else {
-		d.tail.SetNext(d.list, n)
+		d.tail.SetNext(n)
 	}
 	d.tail = n
 	d.len++
@@ -60,19 +59,19 @@ func (d *Deque[K, V]) PushBack(n *node.Node[K, V]) {
 
 // Remove unlinks n, which must be in this deque.
 func (d *Deque[K, V]) Remove(n *node.Node[K, V]) {
-	prev, next := n.Prev(d.list), n.Next(d.list)
+	prev, next := n.Prev(), n.Next()
 	if prev == nil {
 		d.head = next
 	} else {
-		prev.SetNext(d.list, next)
+		prev.SetNext(next)
 	}
 	if next == nil {
 		d.tail = prev
 	} else {
-		next.SetPrev(d.list, prev)
+		next.SetPrev(prev)
 	}
-	n.SetPrev(d.list, nil)
-	n.SetNext(d.list, nil)
+	n.SetPrev(nil)
+	n.SetNext(nil)
 	d.len--
 }
 
@@ -103,26 +102,26 @@ func (d *Deque[K, V]) MoveToBack(n *node.Node[K, V]) {
 	d.PushBack(n)
 }
 
-// Replace puts n in old's position. old must be in this deque and n must not be in any deque using this link set.
+// Replace puts n in old's position. old must be in this deque and n must not be in any deque.
 func (d *Deque[K, V]) Replace(old, n *node.Node[K, V]) {
-	prev, next := old.Prev(d.list), old.Next(d.list)
-	n.SetPrev(d.list, prev)
-	n.SetNext(d.list, next)
+	prev, next := old.Prev(), old.Next()
+	n.SetPrev(prev)
+	n.SetNext(next)
 	if prev == nil {
 		d.head = n
 	} else {
-		prev.SetNext(d.list, n)
+		prev.SetNext(n)
 	}
 	if next == nil {
 		d.tail = n
 	} else {
-		next.SetPrev(d.list, n)
+		next.SetPrev(n)
 	}
-	old.SetPrev(d.list, nil)
-	old.SetNext(d.list, nil)
+	old.SetPrev(nil)
+	old.SetNext(nil)
 }
 
-// AppendBack moves every node of other, in order, to the back of d leaving other empty. Both must use the same link set.
+// AppendBack moves every node of other, in order, to the back of d leaving other empty.
 func (d *Deque[K, V]) AppendBack(other *Deque[K, V]) {
 	if other.head == nil {
 		return
@@ -130,8 +129,8 @@ func (d *Deque[K, V]) AppendBack(other *Deque[K, V]) {
 	if d.tail == nil {
 		d.head = other.head
 	} else {
-		d.tail.SetNext(d.list, other.head)
-		other.head.SetPrev(d.list, d.tail)
+		d.tail.SetNext(other.head)
+		other.head.SetPrev(d.tail)
 	}
 	d.tail = other.tail
 	d.len += other.len
@@ -141,9 +140,9 @@ func (d *Deque[K, V]) AppendBack(other *Deque[K, V]) {
 // Clear unlinks every node, calling fn for each from front to back. fn may be nil.
 func (d *Deque[K, V]) Clear(fn func(*node.Node[K, V])) {
 	for n := d.head; n != nil; {
-		next := n.Next(d.list)
-		n.SetPrev(d.list, nil)
-		n.SetNext(d.list, nil)
+		next := n.Next()
+		n.SetPrev(nil)
+		n.SetNext(nil)
 		if fn != nil {
 			fn(n)
 		}

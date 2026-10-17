@@ -1,17 +1,9 @@
-// Package node defines the cache entry shared by the table, policies, buffers and expiry structures.
+// Package node defines the cache entry shared by the table, policies and buffers.
+//
+// Entries are deliberately compact: K + V + 48 bytes, so an int→int entry is exactly one 64-byte allocation.
 package node
 
 import "sync/atomic"
-
-// List identifies which intrusive link set of a Node a deque uses.
-type List uint8
-
-const (
-	// PolicyList links are owned by the eviction policy.
-	PolicyList List = iota
-	// ExpiryList links are owned by the expiry structures.
-	ExpiryList
-)
 
 const (
 	alive uint32 = iota
@@ -19,9 +11,7 @@ const (
 	dead
 )
 
-type links[K comparable, V any] struct {
-	prev, next *Node[K, V]
-}
+const inPolicyBit = 1 << 31
 
 // Node is a single cache entry.
 //
@@ -32,24 +22,20 @@ type Node[K comparable, V any] struct {
 	Value V
 	Hash  uint64
 
+	prev, next *Node[K, V]
+	expiresAt  atomic.Int64
+
 	// Weight is the entry's weight towards capacity.
 	Weight uint32
 
-	// Slot is policy owned state, only accessed under the policy lock.
-	Slot uint32
+	// slot holds the policy owned slot in its low 31 bits and the engine owned in-policy flag in its top bit. Only
+	// accessed under the policy lock.
+	slot uint32
 
 	// Meta is policy owned state that may be accessed concurrently, such as S3-FIFO's inline frequency.
 	Meta atomic.Uint32
 
-	// InPolicy reports whether the node is currently tracked by the policy. Only accessed under the policy lock.
-	InPolicy bool
-
-	// ExpirySlot is expiry owned state, 0 meaning untracked. Only accessed under the policy lock.
-	ExpirySlot uint32
-
-	expiresAt atomic.Int64
-	state     atomic.Uint32
-	links     [2]links[K, V]
+	state atomic.Uint32
 }
 
 // New creates a new alive node.
@@ -57,24 +43,48 @@ func New[K comparable, V any](key K, value V, hash uint64, weight uint32) *Node[
 	return &Node[K, V]{Key: key, Value: value, Hash: hash, Weight: weight}
 }
 
-// Prev returns the previous node in the given list.
-func (n *Node[K, V]) Prev(l List) *Node[K, V] {
-	return n.links[l].prev
+// Prev returns the previous node in the policy's list.
+func (n *Node[K, V]) Prev() *Node[K, V] {
+	return n.prev
 }
 
-// Next returns the next node in the given list.
-func (n *Node[K, V]) Next(l List) *Node[K, V] {
-	return n.links[l].next
+// Next returns the next node in the policy's list.
+func (n *Node[K, V]) Next() *Node[K, V] {
+	return n.next
 }
 
-// SetPrev sets the previous node in the given list.
-func (n *Node[K, V]) SetPrev(l List, p *Node[K, V]) {
-	n.links[l].prev = p
+// SetPrev sets the previous node in the policy's list.
+func (n *Node[K, V]) SetPrev(p *Node[K, V]) {
+	n.prev = p
 }
 
-// SetNext sets the next node in the given list.
-func (n *Node[K, V]) SetNext(l List, p *Node[K, V]) {
-	n.links[l].next = p
+// SetNext sets the next node in the policy's list.
+func (n *Node[K, V]) SetNext(p *Node[K, V]) {
+	n.next = p
+}
+
+// Slot returns the policy owned slot, a value below 1<<31.
+func (n *Node[K, V]) Slot() uint32 {
+	return n.slot &^ inPolicyBit
+}
+
+// SetSlot sets the policy owned slot, which must be below 1<<31.
+func (n *Node[K, V]) SetSlot(s uint32) {
+	n.slot = n.slot&inPolicyBit | s
+}
+
+// InPolicy reports whether the node is tracked by the policy. Engine owned.
+func (n *Node[K, V]) InPolicy() bool {
+	return n.slot&inPolicyBit != 0
+}
+
+// SetInPolicy records whether the node is tracked by the policy. Engine owned.
+func (n *Node[K, V]) SetInPolicy(in bool) {
+	if in {
+		n.slot |= inPolicyBit
+		return
+	}
+	n.slot &^= inPolicyBit
 }
 
 // ExpiresAt returns the monotonic expiry instant in nanoseconds, 0 meaning never.

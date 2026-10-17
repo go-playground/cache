@@ -16,13 +16,15 @@ type mentry struct {
 	freq   uint32
 }
 
-// model is a naive S3-FIFO: queue index 0 is the front (newest), ghost index 0 is the oldest hash.
+// model is a naive S3-FIFO: queue index 0 is the front (newest). Its ghost is a map from slot to fingerprint with
+// the same sizing and overwrite semantics as the real direct-mapped ghost.
 type model struct {
-	capacity uint64
-	smallMax uint64
-	small    []mentry
-	main     []mentry
-	ghost    []uint64
+	capacity  uint64
+	smallMax  uint64
+	small     []mentry
+	main      []mentry
+	ghostSize int
+	ghost     map[uint64]uint32
 }
 
 func newModel(capacity uint64) *model {
@@ -60,8 +62,7 @@ func (m *model) add(e mentry) []int {
 		return []int{e.key}
 	}
 	e.freq = 0
-	if i := slices.Index(m.ghost, e.hash); i >= 0 {
-		m.ghost = slices.Delete(m.ghost, i, i+1)
+	if m.ghostRemove(e.hash) {
 		m.main = slices.Insert(m.main, 0, e)
 	} else {
 		m.small = slices.Insert(m.small, 0, e)
@@ -91,12 +92,36 @@ func (m *model) remove(key int) {
 	*q = slices.Delete(*q, i, i+1)
 }
 
+func (m *model) ghostPush(h uint64, limit int) {
+	if limit > m.ghostSize {
+		m.ghostSize = 1
+		for m.ghostSize < limit {
+			m.ghostSize *= 2
+		}
+		m.ghost = map[uint64]uint32{}
+	}
+	m.ghost[h%uint64(m.ghostSize)] = uint32(h^h>>32) | 1
+}
+
+func (m *model) ghostRemove(h uint64) bool {
+	if m.ghostSize == 0 {
+		return false
+	}
+	slot := h % uint64(m.ghostSize)
+	if fp, ok := m.ghost[slot]; !ok || fp != uint32(h^h>>32)|1 {
+		return false
+	}
+	delete(m.ghost, slot)
+	return true
+}
+
 func (m *model) clear() []int {
 	var keys []int
 	for _, e := range append(slices.Clone(m.small), m.main...) {
 		keys = append(keys, e.key)
 	}
-	m.small, m.main, m.ghost = nil, nil, nil
+	m.small, m.main = nil, nil
+	clear(m.ghost)
 	return keys
 }
 
@@ -122,10 +147,7 @@ func (m *model) evictSmall() (int, bool) {
 			m.main = slices.Insert(m.main, 0, t)
 			continue
 		}
-		m.ghost = append(m.ghost, t.hash)
-		if limit := max(1, len(m.small)+len(m.main)); len(m.ghost) > limit {
-			m.ghost = m.ghost[len(m.ghost)-limit:]
-		}
+		m.ghostPush(t.hash, max(1, len(m.small)+len(m.main)))
 		return t.key, true
 	}
 	return 0, false
@@ -145,7 +167,11 @@ func (m *model) evictMain() int {
 }
 
 func (m *model) snapshot() snapshot {
-	s := snapshot{ghost: slices.Clone(m.ghost)}
+	var s snapshot
+	for slot, fp := range m.ghost {
+		s.ghost = append(s.ghost, slot<<32|uint64(fp))
+	}
+	slices.Sort(s.ghost)
 	for _, e := range m.small {
 		s.small = append(s.small, kf{e.key, e.freq})
 	}

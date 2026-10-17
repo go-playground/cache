@@ -326,8 +326,8 @@ func TestUpdateInWindowStaysInWindow(t *testing.T) {
 	f.addAll(1, 2, 3)
 	n := f.update(1, 4)
 	f.expect(window, 1, 3, 2)
-	if n.Slot != window || f.p.weights[window] != 6 {
-		t.Errorf("slot %d window weight %d, want %d 6", n.Slot, f.p.weights[window], window)
+	if n.Slot() != window || f.p.weights[window] != 6 {
+		t.Errorf("slot %d window weight %d, want %d 6", n.Slot(), f.p.weights[window], window)
 	}
 }
 

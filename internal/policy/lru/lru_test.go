@@ -41,7 +41,7 @@ func (r *recorder) take() []int {
 // contents returns the tracked keys from most to least recently used.
 func contents(p *Policy[int, int]) []int {
 	var keys []int
-	for n := p.q.Front(); n != nil; n = n.Next(node.PolicyList) {
+	for n := p.q.Front(); n != nil; n = n.Next() {
 		keys = append(keys, n.Key)
 	}
 	return keys
@@ -53,12 +53,12 @@ func checkInvariants(t testing.TB, p *Policy[int, int]) {
 	seen := make(map[*node.Node[int, int]]bool)
 	var weight uint64
 	var prev *node.Node[int, int]
-	for n := p.q.Front(); n != nil; n = n.Next(node.PolicyList) {
+	for n := p.q.Front(); n != nil; n = n.Next() {
 		if seen[n] {
 			t.Fatalf("node %d reachable twice", n.Key)
 		}
 		seen[n] = true
-		if n.Prev(node.PolicyList) != prev {
+		if n.Prev() != prev {
 			t.Fatalf("node %d prev link asymmetric", n.Key)
 		}
 		if p.capacity == 0 || uint64(n.Weight) > p.capacity {

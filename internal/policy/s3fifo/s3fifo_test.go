@@ -47,7 +47,7 @@ type kf struct {
 	freq uint32
 }
 
-// snapshot is the observable state: both queues front to back and the ghost oldest to newest.
+// snapshot is the observable state: both queues front to back and the ghost's occupied slots (see ghost.encoded).
 type snapshot struct {
 	small []kf
 	main  []kf
@@ -60,18 +60,14 @@ func (s snapshot) equal(o snapshot) bool {
 
 func queueContents(q *deque.Deque[int, int]) []kf {
 	var keys []kf
-	for n := q.Front(); n != nil; n = n.Next(node.PolicyList) {
+	for n := q.Front(); n != nil; n = n.Next() {
 		keys = append(keys, kf{n.Key, n.Meta.Load()})
 	}
 	return keys
 }
 
 func contents(p *Policy[int, int]) snapshot {
-	s := snapshot{small: queueContents(&p.small), main: queueContents(&p.main)}
-	for i := p.ghost.head; i != none; i = p.ghost.e[i].next {
-		s.ghost = append(s.ghost, p.ghost.e[i].hash)
-	}
-	return s
+	return snapshot{small: queueContents(&p.small), main: queueContents(&p.main), ghost: p.ghost.encoded()}
 }
 
 // checkInvariants verifies queue links, slots, frequencies, per queue weights, capacity and the ghost structure.
@@ -94,14 +90,14 @@ func checkQueue(t testing.TB, p *Policy[int, int], q *deque.Deque[int, int], slo
 	var weight uint64
 	var prev *node.Node[int, int]
 	count := 0
-	for n := q.Front(); n != nil; n = n.Next(node.PolicyList) {
+	for n := q.Front(); n != nil; n = n.Next() {
 		switch {
 		case seen[n]:
 			t.Fatalf("node %d reachable twice", n.Key)
-		case n.Prev(node.PolicyList) != prev:
+		case n.Prev() != prev:
 			t.Fatalf("node %d prev link asymmetric", n.Key)
-		case n.Slot != slot:
-			t.Fatalf("node %d slot %d in queue %d", n.Key, n.Slot, slot)
+		case n.Slot() != slot:
+			t.Fatalf("node %d slot %d in queue %d", n.Key, n.Slot(), slot)
 		case n.Meta.Load() > maxFreq:
 			t.Fatalf("node %d frequency %d", n.Key, n.Meta.Load())
 		case p.capacity == 0 || uint64(n.Weight) > p.capacity:
@@ -120,46 +116,13 @@ func checkQueue(t testing.TB, p *Policy[int, int], q *deque.Deque[int, int], slo
 
 func checkGhost(t testing.TB, g *ghost) {
 	t.Helper()
-	pos := make(map[int32]int)
-	prev := none
-	for i := g.head; i != none; i = g.e[i].next {
-		if _, ok := pos[i]; ok || g.e[i].prev != prev {
-			t.Fatalf("ghost entry %d cycle or asymmetric link", i)
-		}
-		pos[i] = len(pos)
-		prev = i
+	if n := len(g.slots); n&(n-1) != 0 || (n > 0 && g.mask != uint64(n-1)) {
+		t.Fatalf("ghost size %d mask %x inconsistent", n, g.mask)
 	}
-	if g.tail != prev || g.len != len(pos) {
-		t.Fatalf("ghost tail %d len %d, walked %d entries ending %d", g.tail, g.len, len(pos), prev)
-	}
-	chained := 0
-	for h, s := range g.index {
-		last := -1
-		i := s.oldest
-		for ; ; i = g.e[i].same {
-			p, ok := pos[i]
-			if !ok || g.e[i].hash != h || p <= last {
-				t.Fatalf("ghost chain for %x broken at entry %d", h, i)
-			}
-			last = p
-			chained++
-			if g.e[i].same == none {
-				break
-			}
+	for i, fp := range g.slots {
+		if fp != 0 && fp&1 == 0 {
+			t.Fatalf("ghost slot %d holds invalid fingerprint %x", i, fp)
 		}
-		if i != s.newest {
-			t.Fatalf("ghost chain for %x ends at %d, newest %d", h, i, s.newest)
-		}
-	}
-	free := 0
-	for i := g.free; i != none; i = g.e[i].next {
-		if _, ok := pos[i]; ok {
-			t.Fatalf("ghost entry %d linked and free", i)
-		}
-		free++
-	}
-	if chained != len(pos) || free+len(pos) != len(g.e) {
-		t.Fatalf("ghost: %d chained, %d linked, %d free, %d allocated", chained, len(pos), free, len(g.e))
 	}
 }
 
@@ -218,7 +181,7 @@ func TestSmallEvictsOneHitWondersIntoGhost(t *testing.T) {
 	access(p, nodes[1], 1)
 	p.Add(mk(4, 1), r.evict)
 	assertKeys(t, "evicted", r.take(), []int{1})
-	assertContents(t, p, snapshot{small: []kf{{4, 0}, {3, 0}, {2, 0}}, ghost: []uint64{hashOf(1)}})
+	assertContents(t, p, snapshot{small: []kf{{4, 0}, {3, 0}, {2, 0}}, ghost: ghostOf(p, hashOf(1))})
 }
 
 func TestGhostHitReadmitsIntoMain(t *testing.T) {
@@ -228,7 +191,7 @@ func TestGhostHitReadmitsIntoMain(t *testing.T) {
 	assertKeys(t, "evicted", r.take(), []int{1})
 	p.Add(mk(1, 1), r.evict)
 	assertKeys(t, "evicted", r.take(), []int{2})
-	assertContents(t, p, snapshot{small: []kf{{4, 0}, {3, 0}}, main: []kf{{1, 0}}, ghost: []uint64{hashOf(2)}})
+	assertContents(t, p, snapshot{small: []kf{{4, 0}, {3, 0}}, main: []kf{{1, 0}}, ghost: ghostOf(p, hashOf(2))})
 }
 
 func TestPromotionToMainRequiresFrequencyAboveOne(t *testing.T) {
@@ -244,7 +207,7 @@ func TestPromotionToMainRequiresFrequencyAboveOne(t *testing.T) {
 	assertContents(t, p, snapshot{
 		small: []kf{{5, 0}, {4, 0}},
 		main:  []kf{{2, 0}},
-		ghost: []uint64{hashOf(1), hashOf(3)},
+		ghost: ghostOf(p, hashOf(1), hashOf(3)),
 	})
 }
 
@@ -259,13 +222,13 @@ func TestMainReinsertsAccessedNodesWithDecrement(t *testing.T) {
 	}
 	p.Add(mk(4, 1), r.evict)
 	assertKeys(t, "evicted", r.take(), []int{4})
-	assertContents(t, p, snapshot{main: []kf{{3, 0}, {2, 0}, {1, 0}}, ghost: []uint64{hashOf(4)}})
+	assertContents(t, p, snapshot{main: []kf{{3, 0}, {2, 0}, {1, 0}}, ghost: ghostOf(p, hashOf(4))})
 
 	access(p, nodes[1], 1)
 	access(p, nodes[2], 2)
 	p.Add(mk(5, 1), r.evict)
 	assertKeys(t, "evicted", r.take(), []int{3})
-	assertContents(t, p, snapshot{small: []kf{{5, 0}}, main: []kf{{2, 1}, {1, 0}}, ghost: []uint64{hashOf(4)}})
+	assertContents(t, p, snapshot{small: []kf{{5, 0}}, main: []kf{{2, 1}, {1, 0}}, ghost: ghostOf(p, hashOf(4))})
 }
 
 func TestFrequencySaturatesAtThree(t *testing.T) {
@@ -316,7 +279,7 @@ func TestUpdateInMainStaysInMain(t *testing.T) {
 	nodes := addAll(p, &r, 1)
 	assertKeys(t, "evicted", r.take(), []int{1, 2})
 	p.Update(nodes[1], mk(1, 1), r.evict)
-	assertContents(t, p, snapshot{small: []kf{{3, 0}}, main: []kf{{1, 1}}, ghost: []uint64{hashOf(2)}})
+	assertContents(t, p, snapshot{small: []kf{{3, 0}}, main: []kf{{1, 1}}, ghost: ghostOf(p, hashOf(2))})
 }
 
 func TestUpdateOverCapacityEvicts(t *testing.T) {
@@ -325,7 +288,7 @@ func TestUpdateOverCapacityEvicts(t *testing.T) {
 	nodes := addAll(p, &r, 1, 2, 3)
 	p.Update(nodes[3], mk(3, 3), r.evict)
 	assertKeys(t, "evicted", r.take(), []int{1})
-	assertContents(t, p, snapshot{small: []kf{{3, 1}, {2, 0}}, ghost: []uint64{hashOf(1)}})
+	assertContents(t, p, snapshot{small: []kf{{3, 1}, {2, 0}}, ghost: ghostOf(p, hashOf(1))})
 }
 
 func TestUpdateToHeavyEvictsNewNode(t *testing.T) {
@@ -360,7 +323,7 @@ func TestCapacityOneKeepsLatest(t *testing.T) {
 	var r recorder
 	addAll(p, &r, 1, 2, 3)
 	assertKeys(t, "evicted", r.take(), []int{1, 2})
-	assertContents(t, p, snapshot{small: []kf{{3, 0}}, ghost: []uint64{hashOf(2)}})
+	assertContents(t, p, snapshot{small: []kf{{3, 0}}, ghost: ghostOf(p, hashOf(2))})
 }
 
 func TestWeightedAddEvictsUntilFits(t *testing.T) {
@@ -371,15 +334,23 @@ func TestWeightedAddEvictsUntilFits(t *testing.T) {
 	}
 	p.Add(mk(9, 6), r.evict)
 	assertKeys(t, "evicted", r.take(), []int{0, 1})
-	assertContents(t, p, snapshot{small: []kf{{9, 0}, {3, 0}, {2, 0}}, ghost: []uint64{hashOf(0), hashOf(1)}})
+	assertContents(t, p, snapshot{small: []kf{{9, 0}, {3, 0}, {2, 0}}, ghost: ghostOf(p, hashOf(0), hashOf(1))})
 }
 
+// TestGhostIsBoundedByTrackedCount checks the ghost never holds more than nextPow2 of the tracked entry count, so its
+// memory is 4-8 bytes per entry regardless of how many keys have been evicted.
 func TestGhostIsBoundedByTrackedCount(t *testing.T) {
-	p := New[int, int](2)
+	p := New[int, int](100)
 	var r recorder
-	addAll(p, &r, 1, 2, 3, 4, 5)
-	assertKeys(t, "evicted", r.take(), []int{1, 2, 3})
-	assertContents(t, p, snapshot{small: []kf{{5, 0}, {4, 0}}, ghost: []uint64{hashOf(2), hashOf(3)}})
+	for k := range 100_000 {
+		p.Add(mk(k, 1), r.evict)
+	}
+	if size := len(p.ghost.slots); size > 128 {
+		t.Fatalf("ghost has %d slots for 100 tracked entries", size)
+	}
+	if n := len(p.ghost.encoded()); n == 0 || n > len(p.ghost.slots) {
+		t.Fatalf("ghost holds %d entries in %d slots", n, len(p.ghost.slots))
+	}
 }
 
 func TestGhostMatchesByHash(t *testing.T) {
@@ -389,7 +360,7 @@ func TestGhostMatchesByHash(t *testing.T) {
 	p.Add(node.New(2, 2, 7, 1), r.evict)
 	p.Add(node.New(3, 3, 42, 1), r.evict)
 	assertKeys(t, "evicted", r.take(), []int{1, 2})
-	assertContents(t, p, snapshot{main: []kf{{3, 0}}, ghost: []uint64{7}})
+	assertContents(t, p, snapshot{main: []kf{{3, 0}}, ghost: ghostOf(p, 7)})
 }
 
 func TestRemoveDoesNotEnterGhost(t *testing.T) {
@@ -408,7 +379,7 @@ func TestClearCallsFnForAllAndForgetsGhost(t *testing.T) {
 	var r recorder
 	addAll(p, &r, 1, 2, 3)
 	addAll(p, &r, 1)
-	assertContents(t, p, snapshot{small: []kf{{3, 0}}, main: []kf{{1, 0}}, ghost: []uint64{hashOf(2)}})
+	assertContents(t, p, snapshot{small: []kf{{3, 0}}, main: []kf{{1, 0}}, ghost: ghostOf(p, hashOf(2))})
 	var cleared []int
 	p.Clear(func(n *node.Node[int, int]) { cleared = append(cleared, n.Key) })
 	assertKeys(t, "cleared", cleared, []int{3, 1})

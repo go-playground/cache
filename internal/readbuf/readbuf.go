@@ -34,35 +34,67 @@ type ring[T any] struct {
 }
 
 // Buffer is a striped lossy buffer of *T.
+//
+// It starts with a single stripe and doubles, up to one stripe per processor, only when producers actually collide,
+// so idle or lightly used caches stay small while contended ones spread out.
 type Buffer[T any] struct {
-	stripes []ring[T]
-	mask    uint32
+	stripes    atomic.Pointer[[]*ring[T]]
+	growing    atomic.Bool
+	maxStripes int
 }
 
-// New creates a buffer with one stripe per processor, rounded up to a power of two.
+// New creates a buffer with one stripe that may grow to nextPow2(GOMAXPROCS) stripes.
 func New[T any]() *Buffer[T] {
-	n := nextPow2(uint32(runtime.GOMAXPROCS(0)))
-	return &Buffer[T]{stripes: make([]ring[T], n), mask: n - 1}
+	b := &Buffer[T]{maxStripes: int(nextPow2(uint32(runtime.GOMAXPROCS(0))))}
+	stripes := []*ring[T]{new(ring[T])}
+	b.stripes.Store(&stripes)
+	return b
 }
 
 // Add records x into the calling processor's stripe.
 func (b *Buffer[T]) Add(x *T) Result {
-	r := &b.stripes[uint32(xruntime.Pid())&b.mask]
+	stripes := *b.stripes.Load()
+	r := stripes[xruntime.Pid()&(len(stripes)-1)]
 	t := r.tail.Load()
 	if t-r.head.Load() >= ringSize {
 		return Full
 	}
 	if !r.tail.CompareAndSwap(t, t+1) {
+		b.grow(len(stripes))
 		return Dropped
 	}
 	r.buf[t&(ringSize-1)].Store(x)
 	return Added
 }
 
+// grow doubles the stripes after contention was observed with seen stripes. Existing rings are carried over, so
+// producers and the consumer holding the previous slice still operate on live rings.
+func (b *Buffer[T]) grow(seen int) {
+	if seen >= b.maxStripes || !b.growing.CompareAndSwap(false, true) {
+		return
+	}
+	defer b.growing.Store(false)
+	cur := *b.stripes.Load()
+	if len(cur) != seen {
+		return
+	}
+	next := make([]*ring[T], 2*seen)
+	copy(next, cur)
+	for i := seen; i < len(next); i++ {
+		next[i] = new(ring[T])
+	}
+	b.stripes.Store(&next)
+}
+
+// Stripes returns the current number of stripes.
+func (b *Buffer[T]) Stripes() int {
+	return len(*b.stripes.Load())
+}
+
 // Drain calls fn for every buffered event. Must only be called by one consumer at a time.
 func (b *Buffer[T]) Drain(fn func(*T)) {
-	for i := range b.stripes {
-		b.stripes[i].drain(fn)
+	for _, r := range *b.stripes.Load() {
+		r.drain(fn)
 	}
 }
 

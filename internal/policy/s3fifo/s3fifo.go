@@ -14,7 +14,7 @@ import (
 	"github.com/go-playground/cache/v2/internal/policy"
 )
 
-// Queue identifiers stored in node.Node.Slot.
+// Queue identifiers stored in node.Node.Slot().
 const (
 	small uint32 = iota
 	main
@@ -39,9 +39,8 @@ type Policy[K comparable, V any] struct {
 // New returns an S3-FIFO policy retaining at most capacity weight, of which the small queue targets a tenth.
 func New[K comparable, V any](capacity uint64) *Policy[K, V] {
 	return &Policy[K, V]{
-		small:    deque.New[K, V](node.PolicyList),
-		main:     deque.New[K, V](node.PolicyList),
-		ghost:    newGhost(),
+		small:    deque.New[K, V](),
+		main:     deque.New[K, V](),
 		smallMax: max(1, capacity/10),
 		capacity: capacity,
 	}
@@ -85,11 +84,11 @@ func (p *Policy[K, V]) InlineAccess(n *node.Node[K, V]) {
 // Update replaces old with n in place, n inheriting old's queue and its frequency plus one, then evicts until within
 // capacity.
 func (p *Policy[K, V]) Update(old, n *node.Node[K, V], evict policy.EvictFunc[K, V]) {
-	p.queue(old.Slot).Replace(old, n)
-	n.Slot = old.Slot
+	p.queue(old.Slot()).Replace(old, n)
+	n.SetSlot(old.Slot())
 	n.Meta.Store(min(maxFreq, old.Meta.Load()+1))
-	*p.queueWeight(n.Slot) -= uint64(old.Weight)
-	*p.queueWeight(n.Slot) += uint64(n.Weight)
+	*p.queueWeight(n.Slot()) -= uint64(old.Weight)
+	*p.queueWeight(n.Slot()) += uint64(n.Weight)
 	if p.rejects(n) {
 		p.Remove(n)
 		evict(n)
@@ -99,8 +98,8 @@ func (p *Policy[K, V]) Update(old, n *node.Node[K, V], evict policy.EvictFunc[K,
 
 // Remove stops tracking n without recording it in the ghost queue.
 func (p *Policy[K, V]) Remove(n *node.Node[K, V]) {
-	p.queue(n.Slot).Remove(n)
-	*p.queueWeight(n.Slot) -= uint64(n.Weight)
+	p.queue(n.Slot()).Remove(n)
+	*p.queueWeight(n.Slot()) -= uint64(n.Weight)
 }
 
 // Clear stops tracking every node, calling fn for each, small queue first, and forgets the ghost queue.
@@ -135,7 +134,7 @@ func (p *Policy[K, V]) queueWeight(slot uint32) *uint64 {
 }
 
 func (p *Policy[K, V]) pushFront(n *node.Node[K, V], slot uint32) {
-	n.Slot = slot
+	n.SetSlot(slot)
 	p.queue(slot).PushFront(n)
 	*p.queueWeight(slot) += uint64(n.Weight)
 }

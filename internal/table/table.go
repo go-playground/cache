@@ -16,13 +16,24 @@ import (
 
 // Table is a concurrent map from key to *node.Node. The zero value is not usable, use New.
 type Table[K comparable, V any] struct {
-	cur     atomic.Pointer[state[K, V]]
-	resizes atomic.Uint64
+	cur        atomic.Pointer[state[K, V]]
+	resizes    atomic.Uint64
+	maxBuckets int
 }
 
-// New creates a table pre-sized so that sizeHint entries fit without resizing. sizeHint <= 0 means a small default.
+// New creates an unbounded table pre-sized so that sizeHint entries fit without resizing. sizeHint <= 0 means a small
+// default.
 func New[K comparable, V any](sizeHint int) *Table[K, V] {
+	return NewBounded[K, V](sizeHint, 0)
+}
+
+// NewBounded creates a table pre-sized for sizeHint entries that never grows beyond what maxEntries needs, so a table
+// for a bounded cache ends exactly sized for its capacity. maxEntries <= 0 means unbounded.
+func NewBounded[K comparable, V any](sizeHint, maxEntries int) *Table[K, V] {
 	t := &Table[K, V]{}
+	if maxEntries > 0 {
+		t.maxBuckets = bucketsFor(maxEntries)
+	}
 	t.cur.Store(newState[K, V](bucketsFor(sizeHint)))
 	return t
 }
@@ -87,6 +98,29 @@ func (t *Table[K, V]) Range(fn func(n *node.Node[K, V]) bool) {
 	}
 }
 
+// Scan visits the chains of n root buckets starting at cursor, calling fn for every mapped node, and returns the
+// cursor to resume from; cursors wrap, so repeated scans cycle through the whole table. Weakly consistent like Range,
+// and fn may call any Table method. Used for incremental sweeps that must bound their work per call.
+func (t *Table[K, V]) Scan(cursor uint64, n int, fn func(n *node.Node[K, V])) uint64 {
+	s := t.cur.Load()
+	for range n {
+		for b := &s.buckets[cursor%s.n]; b != nil; b = b.next.Load() {
+			for j := range b.slots {
+				if nd := b.slots[j].Load(); nd != nil {
+					fn(nd)
+				}
+			}
+		}
+		cursor++
+	}
+	return cursor
+}
+
+// Buckets returns the number of root buckets, the length of one full Scan cycle.
+func (t *Table[K, V]) Buckets() int {
+	return len(t.cur.Load().buckets)
+}
+
 // Len returns the number of mapped nodes (may be momentarily stale under concurrency, exact when quiescent).
 func (t *Table[K, V]) Len() int {
 	return int(max(t.cur.Load().size(), 0))
@@ -111,18 +145,27 @@ func (t *Table[K, V]) lockRoot(hash uint64) (*state[K, V], *bucket[K, V]) {
 	}
 }
 
-// grow replaces s with a state twice its size. The goroutine that freezes s is its only resizer; everyone else
-// returns immediately. The successor is unreachable until published, so its buckets need no locking while copying,
-// and the atomic publish orders the copied contents before any use.
+// grow replaces s with a state twice its size, or exactly the size maxBuckets needs if that is smaller; a table at
+// its bound never grows and absorbs any transient excess in overflow buckets. The goroutine that freezes s is its
+// only resizer; everyone else returns immediately. The successor is unreachable until published, so its buckets need
+// no locking while copying, and the atomic publish orders the copied contents before any use.
 func (t *Table[K, V]) grow(s *state[K, V]) {
+	n := 2 * len(s.buckets)
+	if t.maxBuckets > 0 {
+		if len(s.buckets) >= t.maxBuckets {
+			return
+		}
+		n = min(n, t.maxBuckets)
+	}
 	if !s.frozen.CompareAndSwap(false, true) {
 		return
 	}
-	ns := newState[K, V](len(s.buckets) * 2)
+	ns := newState[K, V](n)
+	oldN := uint64(len(s.buckets))
 	for i := range s.buckets {
 		root := &s.buckets[i]
 		root.mu.Lock()
-		ns.copyChain(root)
+		ns.copyChain(root, uint64(i), oldN)
 		root.mu.Unlock()
 	}
 	t.cur.Store(ns)

@@ -1,6 +1,7 @@
 package writebuf
 
 import (
+	"runtime"
 	"sync"
 	"testing"
 )
@@ -167,5 +168,41 @@ func TestStripedReportsFullPerStripe(t *testing.T) {
 	s.Drain(func(int) { got++ })
 	if got != n {
 		t.Fatalf("drained %d, enqueued %d", got, n)
+	}
+}
+
+func TestStripedSingleProducerNeverGrows(t *testing.T) {
+	s := NewStriped[int](8)
+	for i := range 100_000 {
+		for !s.Enqueue(i) {
+			s.Drain(func(int) {})
+		}
+	}
+	if s.Stripes() != 1 {
+		t.Fatalf("uncontended queue grew to %d stripes", s.Stripes())
+	}
+}
+
+func TestStripedContentionGrowsUpToProcessors(t *testing.T) {
+	s := NewStriped[int](8)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for range 4 * runtime.GOMAXPROCS(0) {
+		wg.Go(func() {
+			for i := range 50_000 {
+				for !s.Enqueue(i) {
+					mu.Lock()
+					s.Drain(func(int) {})
+					mu.Unlock()
+				}
+			}
+		})
+	}
+	wg.Wait()
+	if runtime.GOMAXPROCS(0) > 1 && s.Stripes() == 1 {
+		t.Fatal("contended queue never grew")
+	}
+	if s.Stripes() > s.maxStripes {
+		t.Fatalf("grew to %d stripes, max %d", s.Stripes(), s.maxStripes)
 	}
 }

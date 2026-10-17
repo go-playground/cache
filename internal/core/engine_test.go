@@ -61,7 +61,7 @@ func checkInvariants(t testing.TB, e *Engine[int, int]) {
 		if !n.IsAlive() {
 			t.Fatalf("mapped node %d is not alive", n.Key)
 		}
-		if !n.InPolicy {
+		if !n.InPolicy() {
 			t.Fatalf("mapped node %d is not tracked by the policy", n.Key)
 		}
 		return true
@@ -368,7 +368,7 @@ func TestOutOfOrderTasksNeverLeakOrResurrect(t *testing.T) {
 			e.remove(n)
 			e.add(n)
 			e.mu.Unlock()
-			if n.InPolicy || !n.IsDead() {
+			if n.InPolicy() || !n.IsDead() {
 				t.Fatal("removed node must not be added")
 			}
 
@@ -381,7 +381,7 @@ func TestOutOfOrderTasksNeverLeakOrResurrect(t *testing.T) {
 			e.update(old, repl)
 			e.add(old)
 			e.mu.Unlock()
-			if old.InPolicy || !repl.InPolicy {
+			if old.InPolicy() || !repl.InPolicy() {
 				t.Fatal("replacement must be tracked, replaced node must not")
 			}
 
@@ -399,7 +399,7 @@ func TestOutOfOrderTasksNeverLeakOrResurrect(t *testing.T) {
 			e.remove(b)
 			e.update(a, b)
 			e.mu.Unlock()
-			if a.InPolicy || b.InPolicy {
+			if a.InPolicy() || b.InPolicy() {
 				t.Fatal("neither node may remain tracked")
 			}
 			checkInvariants(t, e)
@@ -554,4 +554,94 @@ func TestSetAllocatesOnlyTheNode(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSweepReclaimsExpiredEntriesIncrementally checks that normal maintenance, without a full Drain, reclaims expired
+// entries over successive sweeps, at most one sweep per sweepInterval.
+func TestSweepReclaimsExpiredEntriesIncrementally(t *testing.T) {
+	var expired atomic.Int64
+	e, clk := newEngine(t, policies()[0], 1<<16, func(c *Config[int, int]) {
+		c.ExpireAfterWrite(time.Second)
+		c.OnEviction(func(_, _ int, cause Cause) {
+			if cause == CauseExpired {
+				expired.Add(1)
+			}
+		})
+	})
+	const n = 20_000
+	for i := range n {
+		e.Set(i, i)
+	}
+	clk.Advance(2 * time.Second)
+
+	cursor := e.sweepCursor
+	e.Set(-1, -1)
+	e.Set(-2, -2)
+	if e.sweepCursor == cursor {
+		t.Fatal("first maintenance after expiry should sweep")
+	}
+	cursor = e.sweepCursor
+	e.Set(-3, -3)
+	if e.sweepCursor != cursor {
+		t.Fatal("a second sweep within sweepInterval must not run")
+	}
+
+	maintenances := 0
+	for expired.Load() < n {
+		clk.Advance(time.Duration(sweepInterval))
+		e.Set(-4, -4)
+		maintenances++
+		if maintenances > e.table.Buckets() {
+			t.Fatalf("only %d of %d expired entries reclaimed after %d sweeps", expired.Load(), n, maintenances)
+		}
+	}
+	if s := e.Stats(); s.Len > 4 {
+		t.Fatalf("len %d, expected only the live entries", s.Len)
+	}
+	checkInvariants(t, e)
+}
+
+// TestSweepRunsExtraRoundsWhenMostlyExpired checks the adaptive rounds: a sweep that keeps finding expired entries
+// continues, so a mostly expired cache is reclaimed in a handful of sweeps rather than one bucket run per sweep.
+func TestSweepRunsExtraRoundsWhenMostlyExpired(t *testing.T) {
+	e, clk := newEngine(t, policies()[0], 1<<14, func(c *Config[int, int]) { c.ExpireAfterWrite(time.Second) })
+	for i := range 1 << 14 {
+		e.Set(i, i)
+	}
+	clk.Advance(2 * time.Second)
+	before := e.sweepCursor
+	e.Set(-1, -1)
+	if scanned := e.sweepCursor - before; scanned != sweepBuckets*sweepMaxRounds {
+		t.Fatalf("scanned %d buckets, want %d when every round is mostly expired", scanned, sweepBuckets*sweepMaxRounds)
+	}
+}
+
+func TestSweepSkipsLiveAndUnexpiredEntries(t *testing.T) {
+	e, clk := newEngine(t, policies()[0], 100, func(c *Config[int, int]) { c.ExpireAfterWrite(time.Hour) })
+	for i := range 50 {
+		e.Set(i, i)
+	}
+	clk.Advance(time.Minute)
+	e.Drain()
+	if e.Stats().Len != 50 {
+		t.Fatal("unexpired entries must survive sweeps")
+	}
+}
+
+// TestSweepOfEntryNotYetInPolicy reclaims an expired entry whose add task has not been applied yet; the later add
+// must then be skipped.
+func TestSweepOfEntryNotYetInPolicy(t *testing.T) {
+	e, clk := newEngine(t, policies()[0], 100, func(c *Config[int, int]) { c.ExpireAfterWrite(time.Second) })
+	n := e.NewNode(e.Hash(1), 1, 1)
+	e.table.Store(n)
+	clk.Advance(2 * time.Second)
+	e.mu.Lock()
+	e.drainNow = clk.Now()
+	e.onSweep(n)
+	e.add(n)
+	e.mu.Unlock()
+	if n.InPolicy() || !n.IsDead() || e.table.Len() != 0 {
+		t.Fatal("expired pending entry must be reclaimed and its add skipped")
+	}
+	checkInvariants(t, e)
 }

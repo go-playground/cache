@@ -16,7 +16,7 @@ import (
 	"github.com/go-playground/cache/v2/internal/sketch"
 )
 
-// Queue identifiers stored in node.Node.Slot.
+// Queue identifiers stored in node.Node.Slot().
 const (
 	window uint32 = iota
 	probation
@@ -66,7 +66,7 @@ func New[K comparable, V any](capacity uint64, adaptive bool) *Policy[K, V] {
 		climber:  newClimber(capacity),
 	}
 	for q := range p.queues {
-		p.queues[q] = deque.New[K, V](node.PolicyList)
+		p.queues[q] = deque.New[K, V]()
 	}
 	p.sketchCap = p.sketch.Capacity()
 	p.resetWindow()
@@ -103,9 +103,9 @@ func (p *Policy[K, V]) Access(n *node.Node[K, V]) {
 
 // Update replaces old with n in old's queue and records a hit for n, then evicts until within capacity.
 func (p *Policy[K, V]) Update(old, n *node.Node[K, V], evict policy.EvictFunc[K, V]) {
-	n.Slot = old.Slot
-	p.queues[n.Slot].Replace(old, n)
-	p.weights[n.Slot] = p.weights[n.Slot] - uint64(old.Weight) + uint64(n.Weight)
+	n.SetSlot(old.Slot())
+	p.queues[n.Slot()].Replace(old, n)
+	p.weights[n.Slot()] = p.weights[n.Slot()] - uint64(old.Weight) + uint64(n.Weight)
 	p.total = p.total - uint64(old.Weight) + uint64(n.Weight)
 	p.sketch.Increment(n.Hash)
 	p.record(true)
@@ -189,11 +189,11 @@ func percent(v, pct uint64) uint64 {
 
 // reorder marks n as most recently used in its queue, promoting it from probation to protected.
 func (p *Policy[K, V]) reorder(n *node.Node[K, V]) {
-	if n.Slot == probation {
+	if n.Slot() == probation {
 		p.move(n, protected)
 		return
 	}
-	p.queues[n.Slot].MoveToFront(n)
+	p.queues[n.Slot()].MoveToFront(n)
 }
 
 // evictEntries moves overflow into probation, then evicts until within capacity. Candidates from the window form the
@@ -222,7 +222,7 @@ func (p *Policy[K, V]) nextCandidate(candidate *node.Node[K, V]) *node.Node[K, V
 	if candidate == nil {
 		return nil
 	}
-	return candidate.Prev(node.PolicyList)
+	return candidate.Prev()
 }
 
 // victim returns the least recently used node of probation, else protected, else the window.
@@ -279,7 +279,7 @@ func (p *Policy[K, V]) move(n *node.Node[K, V], q uint32) {
 }
 
 func (p *Policy[K, V]) push(n *node.Node[K, V], q uint32) {
-	n.Slot = q
+	n.SetSlot(q)
 	p.queues[q].PushFront(n)
 	p.weights[q] += uint64(n.Weight)
 	p.total += uint64(n.Weight)
@@ -287,8 +287,8 @@ func (p *Policy[K, V]) push(n *node.Node[K, V], q uint32) {
 }
 
 func (p *Policy[K, V]) unlink(n *node.Node[K, V]) {
-	p.queues[n.Slot].Remove(n)
-	p.weights[n.Slot] -= uint64(n.Weight)
+	p.queues[n.Slot()].Remove(n)
+	p.weights[n.Slot()] -= uint64(n.Weight)
 	p.total -= uint64(n.Weight)
 	p.count--
 }

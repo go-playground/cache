@@ -45,7 +45,8 @@ type differential struct {
 }
 
 // runDifferential decodes data into ops and checks Table against refTable after each one.
-// data[0] selects the hash mode (low 2 bits) and the sizeHint (high 4 bits); each following byte pair is
+// data[0] selects the hash mode (low 2 bits), whether growth is bounded (bit 2, bounding it to the sizeHint plus a
+// margin so the final growth step is less than doubling) and the sizeHint (high 4 bits); each following byte pair is
 // (op and argument, key).
 func runDifferential(t testing.TB, data []byte) {
 	if len(data) == 0 {
@@ -54,7 +55,7 @@ func runDifferential(t testing.TB, data []byte) {
 	d := &differential{
 		t:       t,
 		hash:    hashModes[int(data[0])%len(hashModes)],
-		tbl:     New[int, int](int(data[0] >> 4)),
+		tbl:     newFuzzTable(data[0]),
 		ref:     newRefTable[int, int](0),
 		history: make(map[int][]*node.Node[int, int]),
 	}
@@ -187,4 +188,12 @@ func TestTableAgainstReference(t *testing.T) {
 			runDifferential(t, randomOps(mode, size, uint64(s)))
 		}
 	}
+}
+
+func newFuzzTable(b byte) *Table[int, int] {
+	hint := int(b >> 4)
+	if b&4 == 0 {
+		return New[int, int](hint)
+	}
+	return NewBounded[int, int](hint, hint*3+17)
 }

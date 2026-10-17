@@ -1,12 +1,13 @@
 package table
 
 import (
-	"github.com/go-playground/cache/v2/internal/xruntime"
+	"math"
 	"math/bits"
 	"runtime"
 	"sync/atomic"
 
 	"github.com/go-playground/cache/v2/internal/node"
+	"github.com/go-playground/cache/v2/internal/xruntime"
 )
 
 const (
@@ -28,7 +29,7 @@ type stripe struct {
 type state[K comparable, V any] struct {
 	buckets    []bucket[K, V]
 	stripes    []stripe
-	mask       uint64
+	n          uint64
 	stripeMask uint64
 	resizeAt   int64
 	frozen     atomic.Bool
@@ -40,30 +41,37 @@ func newState[K comparable, V any](n int) *state[K, V] {
 	return &state[K, V]{
 		buckets:    make([]bucket[K, V], n),
 		stripes:    make([]stripe, ns),
-		mask:       uint64(n - 1),
+		n:          uint64(n),
 		stripeMask: uint64(ns - 1),
 		resizeAt:   int64(n * slotsPerBucket * loadNum / loadDen),
 		resized:    make(chan struct{}),
 	}
 }
 
-// bucketsFor returns the smallest power of two root bucket count whose resize threshold is at least sizeHint.
+// bucketsFor returns the smallest root bucket count whose resize threshold is at least sizeHint. Bucket counts need
+// not be powers of two, so a table sized for a capacity wastes no memory to rounding.
 func bucketsFor(sizeHint int) int {
 	sizeHint = min(max(sizeHint, 0), maxHint)
 	den := slotsPerBucket * loadNum
 	need := (sizeHint*loadDen + den - 1) / den
-	return nextPow2(max(need, minBuckets))
+	return max(need, minBuckets)
 }
 
 func nextPow2(n int) int {
 	return 1 << bits.Len(uint(n-1))
 }
 
-func (s *state[K, V]) root(hash uint64) *bucket[K, V] {
-	return &s.buckets[hash&s.mask]
+// index maps hash to a root bucket by multiply-shift range reduction of its low 32 bits, which works for any bucket
+// count. The top bits, used for tags, are independent of the index.
+func (s *state[K, V]) index(hash uint64) uint64 {
+	return (hash & math.MaxUint32) * s.n >> 32
 }
 
-// stripeFor returns the counter stripe of hash. stripeMask <= mask, so it only depends on the root bucket.
+func (s *state[K, V]) root(hash uint64) *bucket[K, V] {
+	return &s.buckets[s.index(hash)]
+}
+
+// stripeFor returns the counter stripe of hash.
 func (s *state[K, V]) stripeFor(hash uint64) *stripe {
 	return &s.stripes[hash&s.stripeMask]
 }
@@ -130,23 +138,24 @@ func (s *state[K, V]) deleteNode(root *bucket[K, V], n *node.Node[K, V]) bool {
 	return false
 }
 
-// copyChain copies the nodes of one locked chain of the previous, half sized, state into s, which is not yet
-// reachable by anyone else. Every node of old root i lands in new root i or i+len(old) and no other old chain feeds
-// those roots, so appending through one cursor per destination keeps the copy linear even for very long chains.
-func (s *state[K, V]) copyChain(root *bucket[K, V]) {
-	var lo, hi cursor[K, V]
-	half := uint64(len(s.buckets) >> 1)
+// copyChain copies the nodes of locked root i of the previous state, which had oldN roots, into s, which is not yet
+// reachable by anyone else and has at most twice as many roots.
+//
+// Range reduction is monotonic in the hash, so old root i covers one contiguous hash range, which maps onto at most 3
+// consecutive new roots starting at i*n/oldN. With exact doubling no other old chain feeds them; with a smaller final
+// step a boundary root may also be fed by the neighbouring old chain, so cursors resume after existing nodes. Appending
+// through one cursor per destination keeps the copy linear even for very long chains.
+func (s *state[K, V]) copyChain(root *bucket[K, V], i, oldN uint64) {
+	var cursors [3]cursor[K, V]
+	first := i * s.n / oldN
 	for b := root; b != nil; b = b.next.Load() {
-		for i := range b.slots {
-			n := b.slots[i].Load()
+		for j := range b.slots {
+			n := b.slots[j].Load()
 			if n == nil {
 				continue
 			}
-			c := &lo
-			if n.Hash&half != 0 {
-				c = &hi
-			}
-			c.append(s.root(n.Hash), n)
+			dst := s.index(n.Hash)
+			cursors[dst-first].append(&s.buckets[dst], n)
 			s.stripeFor(n.Hash).n.Add(1)
 		}
 	}

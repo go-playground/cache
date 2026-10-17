@@ -20,8 +20,8 @@ func keys(t *testing.T, d *Deque[int, int]) []int {
 	t.Helper()
 	var out []int
 	var prev *node.Node[int, int]
-	for n := d.Front(); n != nil; n = n.Next(d.list) {
-		if n.Prev(d.list) != prev {
+	for n := d.Front(); n != nil; n = n.Next() {
+		if n.Prev() != prev {
 			t.Fatalf("broken prev link at %d", n.Key)
 		}
 		out = append(out, n.Key)
@@ -44,7 +44,7 @@ func expect(t *testing.T, d *Deque[int, int], want ...int) {
 }
 
 func TestPushAndPop(t *testing.T) {
-	d := New[int, int](node.PolicyList)
+	d := New[int, int]()
 	ns := nodes(1, 2, 3)
 	d.PushFront(ns[0])
 	d.PushFront(ns[1])
@@ -64,7 +64,7 @@ func TestPushAndPop(t *testing.T) {
 
 func TestRemoveFromEveryPosition(t *testing.T) {
 	for i := range 3 {
-		d := New[int, int](node.PolicyList)
+		d := New[int, int]()
 		ns := nodes(1, 2, 3)
 		for _, n := range ns {
 			d.PushBack(n)
@@ -72,14 +72,14 @@ func TestRemoveFromEveryPosition(t *testing.T) {
 		d.Remove(ns[i])
 		want := slices.Delete([]int{1, 2, 3}, i, i+1)
 		expect(t, &d, want...)
-		if ns[i].Prev(node.PolicyList) != nil || ns[i].Next(node.PolicyList) != nil {
+		if ns[i].Prev() != nil || ns[i].Next() != nil {
 			t.Fatal("removed node must be fully unlinked")
 		}
 	}
 }
 
 func TestMoves(t *testing.T) {
-	d := New[int, int](node.PolicyList)
+	d := New[int, int]()
 	ns := nodes(1, 2, 3)
 	for _, n := range ns {
 		d.PushBack(n)
@@ -96,7 +96,7 @@ func TestMoves(t *testing.T) {
 
 func TestReplaceKeepsPosition(t *testing.T) {
 	for i := range 3 {
-		d := New[int, int](node.PolicyList)
+		d := New[int, int]()
 		ns := nodes(1, 2, 3)
 		for _, n := range ns {
 			d.PushBack(n)
@@ -106,14 +106,14 @@ func TestReplaceKeepsPosition(t *testing.T) {
 		want := []int{1, 2, 3}
 		want[i] = 9
 		expect(t, &d, want...)
-		if ns[i].Prev(node.PolicyList) != nil || ns[i].Next(node.PolicyList) != nil {
+		if ns[i].Prev() != nil || ns[i].Next() != nil {
 			t.Fatal("replaced node must be fully unlinked")
 		}
 	}
 }
 
 func TestAppendBack(t *testing.T) {
-	a, b := New[int, int](node.PolicyList), New[int, int](node.PolicyList)
+	a, b := New[int, int](), New[int, int]()
 	for _, n := range nodes(1, 2) {
 		a.PushBack(n)
 	}
@@ -124,7 +124,7 @@ func TestAppendBack(t *testing.T) {
 	expect(t, &a, 1, 2, 3, 4)
 	expect(t, &b)
 
-	empty := New[int, int](node.PolicyList)
+	empty := New[int, int]()
 	empty.AppendBack(&a)
 	expect(t, &empty, 1, 2, 3, 4)
 	a.AppendBack(&b)
@@ -132,7 +132,7 @@ func TestAppendBack(t *testing.T) {
 }
 
 func TestClearVisitsAndUnlinksAll(t *testing.T) {
-	d := New[int, int](node.PolicyList)
+	d := New[int, int]()
 	ns := nodes(1, 2, 3)
 	for _, n := range ns {
 		d.PushBack(n)
@@ -144,23 +144,9 @@ func TestClearVisitsAndUnlinksAll(t *testing.T) {
 	}
 	expect(t, &d)
 	for _, n := range ns {
-		if n.Next(node.PolicyList) != nil || n.Prev(node.PolicyList) != nil {
+		if n.Next() != nil || n.Prev() != nil {
 			t.Fatal("cleared node still linked")
 		}
 	}
 	d.Clear(nil)
-}
-
-func TestLinkSetsAreIndependent(t *testing.T) {
-	policy, expiry := New[int, int](node.PolicyList), New[int, int](node.ExpiryList)
-	ns := nodes(1, 2, 3)
-	for _, n := range ns {
-		policy.PushBack(n)
-		expiry.PushFront(n)
-	}
-	expect(t, &policy, 1, 2, 3)
-	expect(t, &expiry, 3, 2, 1)
-	policy.Remove(ns[1])
-	expect(t, &policy, 1, 3)
-	expect(t, &expiry, 3, 2, 1)
 }

@@ -101,7 +101,7 @@ type cursor[K comparable, V any] struct {
 
 func (c *cursor[K, V]) append(root *bucket[K, V], n *node.Node[K, V]) {
 	if c.b == nil {
-		c.b = root
+		c.resume(root)
 	}
 	if c.i == slotsPerBucket {
 		nb := &bucket[K, V]{}
@@ -110,4 +110,18 @@ func (c *cursor[K, V]) append(root *bucket[K, V], n *node.Node[K, V]) {
 	}
 	c.b.publish(c.i, tagOf(n.Hash), n)
 	c.i++
+}
+
+// resume positions the cursor after the last node already in root's chain. When growth is less than doubling, two
+// adjacent old chains can share a destination root, and the second must append after the first. Cursors fill slots
+// contiguously, so the first empty slot of the last bucket is the end.
+func (c *cursor[K, V]) resume(root *bucket[K, V]) {
+	c.b = root
+	for next := c.b.next.Load(); next != nil; next = c.b.next.Load() {
+		c.b = next
+	}
+	c.i = 0
+	for c.i < slotsPerBucket && c.b.slots[c.i].Load() != nil {
+		c.i++
+	}
 }
