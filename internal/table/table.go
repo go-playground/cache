@@ -1,0 +1,131 @@
+// Package table is a concurrent hash table from key to *node.Node with lock-free reads.
+//
+// The design follows CLHT: every bucket is one cache line holding a mutex, a word of one-byte tags and five node
+// slots, chained to overflow buckets. Readers only perform atomic loads, so hot keys never bounce cache lines between
+// reading cores. Writers lock the root bucket of the chain they modify. The table doubles once it exceeds a 0.75 load
+// factor and never shrinks; replaced tables are left intact so readers still holding them stay correct.
+//
+// Callers compute the hash: index uses its low bits and the tag its top 7 bits, so it must be well mixed.
+package table
+
+import (
+	"sync/atomic"
+
+	"github.com/go-playground/cache/v2/internal/node"
+)
+
+// Table is a concurrent map from key to *node.Node. The zero value is not usable, use New.
+type Table[K comparable, V any] struct {
+	cur     atomic.Pointer[state[K, V]]
+	resizes atomic.Uint64
+}
+
+// New creates a table pre-sized so that sizeHint entries fit without resizing. sizeHint <= 0 means a small default.
+func New[K comparable, V any](sizeHint int) *Table[K, V] {
+	t := &Table[K, V]{}
+	t.cur.Store(newState[K, V](bucketsFor(sizeHint)))
+	return t
+}
+
+// Get returns the node mapped to key, or nil. Lock-free.
+//
+// A reader may still walk a state that has since been replaced. That state is frozen before it is copied and is
+// never written again, so it equals the logical map from the freeze until the first write to its successor, which
+// can only happen after the successor is published. Whatever the reader returns was therefore the mapping at some
+// instant within its own call.
+func (t *Table[K, V]) Get(hash uint64, key K) *node.Node[K, V] {
+	s := t.cur.Load()
+	tag := tagOf(hash)
+	for b := s.root(hash); b != nil; b = b.next.Load() {
+		if _, n := b.find(b.meta.Load(), tag, hash, key); n != nil {
+			return n
+		}
+	}
+	return nil
+}
+
+// Store maps n.Key to n, returning the node it replaced or nil.
+func (t *Table[K, V]) Store(n *node.Node[K, V]) (old *node.Node[K, V]) {
+	s, root := t.lockRoot(n.Hash)
+	old, overflowed := s.store(root, n)
+	root.mu.Unlock()
+	if overflowed && s.size() > s.resizeAt {
+		t.grow(s)
+	}
+	return old
+}
+
+// Delete removes key, returning the removed node or nil.
+func (t *Table[K, V]) Delete(hash uint64, key K) (old *node.Node[K, V]) {
+	s, root := t.lockRoot(hash)
+	old = s.delete(root, hash, key)
+	root.mu.Unlock()
+	return old
+}
+
+// DeleteNode removes n.Key only if it is currently mapped to exactly n (pointer equality). Reports whether it removed.
+func (t *Table[K, V]) DeleteNode(n *node.Node[K, V]) bool {
+	s, root := t.lockRoot(n.Hash)
+	ok := s.deleteNode(root, n)
+	root.mu.Unlock()
+	return ok
+}
+
+// Range calls fn for every mapped node until fn returns false. Weakly consistent: safe concurrently with writers;
+// nodes present for the whole Range are visited exactly once, concurrently changed ones may or may not be, and a key
+// deleted and re-stored during the Range may be visited twice. fn may call any Table method.
+func (t *Table[K, V]) Range(fn func(n *node.Node[K, V]) bool) {
+	s := t.cur.Load()
+	for i := range s.buckets {
+		for b := &s.buckets[i]; b != nil; b = b.next.Load() {
+			for j := range b.slots {
+				if n := b.slots[j].Load(); n != nil && !fn(n) {
+					return
+				}
+			}
+		}
+	}
+}
+
+// Len returns the number of mapped nodes (may be momentarily stale under concurrency, exact when quiescent).
+func (t *Table[K, V]) Len() int {
+	return int(max(t.cur.Load().size(), 0))
+}
+
+// lockRoot returns the current state with the root bucket of hash locked, never a frozen state.
+//
+// frozen is checked under the root lock. A writer that locked the root before the resizer did either sees frozen
+// unset and finishes its write before the resizer copies that root, or sees it set. A writer that locks the root after
+// the resizer released it is ordered after the freeze by the mutex and sees it set. Writers seeing it set wait for the
+// successor, which is published before resized is closed, so no write is ever lost.
+func (t *Table[K, V]) lockRoot(hash uint64) (*state[K, V], *bucket[K, V]) {
+	for {
+		s := t.cur.Load()
+		root := s.root(hash)
+		root.mu.Lock()
+		if !s.frozen.Load() {
+			return s, root
+		}
+		root.mu.Unlock()
+		<-s.resized
+	}
+}
+
+// grow replaces s with a state twice its size. The goroutine that freezes s is its only resizer; everyone else
+// returns immediately. The successor is unreachable until published, so its buckets need no locking while copying,
+// and the atomic publish orders the copied contents before any use.
+func (t *Table[K, V]) grow(s *state[K, V]) {
+	if !s.frozen.CompareAndSwap(false, true) {
+		return
+	}
+	ns := newState[K, V](len(s.buckets) * 2)
+	for i := range s.buckets {
+		root := &s.buckets[i]
+		root.mu.Lock()
+		ns.copyChain(root)
+		root.mu.Unlock()
+	}
+	t.cur.Store(ns)
+	t.resizes.Add(1)
+	close(s.resized)
+}

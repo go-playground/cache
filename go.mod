@@ -1,7 +1,5 @@
-module github.com/go-playground/cache
+module github.com/go-playground/cache/v2
 
-go 1.20
+go 1.27
 
-require github.com/go-playground/pkg/v5 v5.21.2
-
-require github.com/go-playground/assert/v2 v2.2.0
+require github.com/go-playground/pkg/v5 v5.32.0
