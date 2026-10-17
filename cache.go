@@ -1,0 +1,81 @@
+// Package cache provides fast, concurrent, bounded in-memory caches with pluggable eviction policies.
+//
+// Caches are created through a policy package's builder, each producing the same *Cache type:
+//
+//	lru.New[string, User](10_000).Build()     // least recently used
+//	lfu.New[string, User](10_000).Build()     // least frequently used
+//	tinylfu.New[string, User](10_000).Build() // W-TinyLFU: best general purpose hit ratio
+//	s3fifo.New[string, User](10_000).Build()  // S3-FIFO: fastest reads, scan resistant
+//
+// All methods are safe for concurrent use. Reads are lock-free; eviction bookkeeping is batched and amortised onto
+// callers, so a cache needs no background goroutine and no Close.
+package cache
+
+import (
+	optionext "github.com/go-playground/pkg/v5/values/option"
+
+	"github.com/go-playground/cache/v2/internal/core"
+)
+
+// Cache is a concurrent, bounded, in-memory cache. Create one with a policy package's builder, e.g. lru.New.
+type Cache[K comparable, V any] struct {
+	e     *core.Engine[K, V]
+	loads *inflight[K, V]
+}
+
+// New builds a Cache from a policy builder's configuration. It is used by the policy packages; use their builders.
+func New[K comparable, V any](cfg core.Config[K, V]) *Cache[K, V] {
+	return &Cache[K, V]{e: core.NewEngine(cfg), loads: newInflight[K, V]()}
+}
+
+func (c *Cache[K, V]) engine() *core.Engine[K, V] {
+	if c.e == nil {
+		panic("cache: Cache must be created via a policy builder, e.g. lru.New[K, V](capacity).Build()")
+	}
+	return c.e
+}
+
+// Get returns the value for key, or None if it is absent or expired.
+func (c *Cache[K, V]) Get(key K) optionext.Option[V] {
+	return c.engine().Get(key)
+}
+
+// Set maps key to value, replacing any existing value. A GetOrLoad for key that is in flight will not overwrite it.
+func (c *Cache[K, V]) Set(key K, value V) {
+	e := c.engine()
+	h := e.Hash(key)
+	c.loads.invalidate(h, key)
+	e.Notify(e.Insert(e.NewNode(h, key, value)))
+}
+
+// Remove removes key if present. A GetOrLoad for key that is in flight will not store its result.
+func (c *Cache[K, V]) Remove(key K) {
+	e := c.engine()
+	h := e.Hash(key)
+	c.loads.invalidate(h, key)
+	e.RemoveHashed(h, key)
+}
+
+// Clear removes every entry. GetOrLoad calls in flight will not store their results.
+func (c *Cache[K, V]) Clear() {
+	e := c.engine()
+	c.loads.invalidateAll()
+	e.Clear()
+}
+
+// Stats returns cumulative statistics. Hits, Misses, Sets, Loads and LoadErrors are only recorded when the cache
+// was built with RecordStats.
+func (c *Cache[K, V]) Stats() Stats {
+	s := c.engine().Stats()
+	return Stats{
+		Capacity:   s.Capacity,
+		Len:        s.Len,
+		Weight:     s.Weight,
+		Hits:       s.Hits,
+		Misses:     s.Misses,
+		Sets:       s.Sets,
+		Evictions:  s.Evictions,
+		Loads:      s.Loads,
+		LoadErrors: s.LoadErrors,
+	}
+}
