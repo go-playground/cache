@@ -20,7 +20,10 @@ v2 is a rewrite: a concurrent-first engine with pluggable eviction policies. The
   resurrecting removed keys.
 - Weighted capacity via `NewWeighted` with built-in weighers `cache.WeighByLen`, `cache.WeighByKeyAndLen` and
   `cache.WeighBySize`.
-- Expiry modes `ExpireAfterWrite`, `ExpireAfterAccess` and per-entry `ExpireAfter`, with active reclamation.
+- Expiry modes `ExpireAfterWrite`, `ExpireAfterAccess` and per-entry `ExpireAfter`. Expired entries are never
+  returned and are reclaimed by an incremental sweep, costing 8 bytes per entry.
+- Compact entries (key + value + 48 bytes) and a table sized exactly to capacity; buffers grow per core only under
+  contention.
 - `OnEviction` callbacks with a `cache.Cause`, invoked outside of locks.
 - Optional `RecordStats`; `Stats` now reports cumulative values with `Gets` and `HitRatio` helpers.
 
