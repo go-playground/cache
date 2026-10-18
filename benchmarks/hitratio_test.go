@@ -3,6 +3,7 @@ package benchmarks
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -40,17 +41,20 @@ func replay(c Cache, keys []int) float64 {
 	return float64(hits) / float64(len(keys))
 }
 
-// TestHitRatio reports the hit ratio of every bounded implementation on each trace. Set HITRATIO=1 to run it.
+// TestHitRatio reports the hit ratio of every bounded implementation on each trace. Set HITRATIO=1 to run it, and
+// optionally IMPLS to a comma separated list of implementation names to compare only those.
 //
 //	HITRATIO=1 go test -run=TestHitRatio -v
+//	HITRATIO=1 IMPLS=v2-tinylfu,otter go test -run=TestHitRatio -v
 func TestHitRatio(t *testing.T) {
 	if os.Getenv("HITRATIO") == "" {
 		t.Skip("set HITRATIO=1 to run the hit-ratio comparison")
 	}
 	traces := append(hitTraces(), arcTraces(t)...)
 	var bounded []Impl
+	only := os.Getenv("IMPLS")
 	for _, impl := range Impls() {
-		if impl.Bounded {
+		if impl.Bounded && (only == "" || slices.Contains(strings.Split(only, ","), impl.Name)) {
 			bounded = append(bounded, impl)
 		}
 	}
