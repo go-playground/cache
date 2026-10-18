@@ -56,7 +56,7 @@ func (c *Cache[K, V]) GetOrLoad(ctx context.Context, key K, load Loader[K, V]) r
 		if v := e.GetHashed(h, key); v.IsSome() {
 			return resultext.Ok[V, error](v.Unwrap())
 		}
-		res, retry := c.loads.do(ctx, e, h, key, load)
+		res, retry := c.inflight().do(ctx, e, h, key, load)
 		if !retry {
 			return res
 		}

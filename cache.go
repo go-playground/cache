@@ -12,6 +12,8 @@
 package cache
 
 import (
+	"sync/atomic"
+
 	optionext "github.com/go-playground/pkg/v5/values/option"
 
 	"github.com/go-playground/cache/v2/internal/core"
@@ -19,13 +21,15 @@ import (
 
 // Cache is a concurrent, bounded, in-memory cache. Create one with a policy package's builder, e.g. lru.New.
 type Cache[K comparable, V any] struct {
-	e     *core.Engine[K, V]
-	loads *inflight[K, V]
+	e *core.Engine[K, V]
+
+	// loads tracks in-flight GetOrLoad calls. Allocated on first use so caches that never load pay nothing for it.
+	loads atomic.Pointer[inflight[K, V]]
 }
 
 // New builds a Cache from a policy builder's configuration. It is used by the policy packages; use their builders.
 func New[K comparable, V any](cfg core.Config[K, V]) *Cache[K, V] {
-	return &Cache[K, V]{e: core.NewEngine(cfg), loads: newInflight[K, V]()}
+	return &Cache[K, V]{e: core.NewEngine(cfg)}
 }
 
 func (c *Cache[K, V]) engine() *core.Engine[K, V] {
@@ -44,7 +48,7 @@ func (c *Cache[K, V]) Get(key K) optionext.Option[V] {
 func (c *Cache[K, V]) Set(key K, value V) {
 	e := c.engine()
 	h := e.Hash(key)
-	c.loads.invalidate(h, key)
+	c.invalidate(h, key)
 	e.Notify(e.Insert(e.NewNode(h, key, value)))
 }
 
@@ -52,14 +56,16 @@ func (c *Cache[K, V]) Set(key K, value V) {
 func (c *Cache[K, V]) Remove(key K) {
 	e := c.engine()
 	h := e.Hash(key)
-	c.loads.invalidate(h, key)
+	c.invalidate(h, key)
 	e.RemoveHashed(h, key)
 }
 
 // Clear removes every entry. GetOrLoad calls in flight will not store their results.
 func (c *Cache[K, V]) Clear() {
 	e := c.engine()
-	c.loads.invalidateAll()
+	if f := c.loads.Load(); f != nil {
+		f.invalidateAll()
+	}
 	e.Clear()
 }
 
@@ -78,4 +84,19 @@ func (c *Cache[K, V]) Stats() Stats {
 		Loads:      s.Loads,
 		LoadErrors: s.LoadErrors,
 	}
+}
+
+func (c *Cache[K, V]) invalidate(h uint64, key K) {
+	if f := c.loads.Load(); f != nil {
+		f.invalidate(h, key)
+	}
+}
+
+// inflight returns the in-flight load tracker, creating it on first use.
+func (c *Cache[K, V]) inflight() *inflight[K, V] {
+	if f := c.loads.Load(); f != nil {
+		return f
+	}
+	c.loads.CompareAndSwap(nil, newInflight[K, V]())
+	return c.loads.Load()
 }
