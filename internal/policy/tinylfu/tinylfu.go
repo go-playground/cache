@@ -163,6 +163,29 @@ func (p *Policy[K, V]) record(hit bool) {
 	limit := maxWindow(p.capacity)
 	p.windowTarget = min(max(p.windowTarget+amount, 0), float64(limit))
 	p.setWindow(min(uint64(p.windowTarget), limit))
+	if amount > 0 {
+		p.growWindow()
+	}
+}
+
+// windowTransferQuota bounds the weight moved into the window per adjustment, as Caffeine does.
+const windowTransferQuota = 1000
+
+// growWindow fills a grown window from the least recently used end of the main region, probation first, as Caffeine
+// does, so a larger window takes effect immediately rather than only as new entries arrive. A shrunk window drains
+// into probation on the next Add or Access.
+func (p *Policy[K, V]) growWindow() {
+	for quota := uint64(windowTransferQuota); quota > 0; {
+		n := p.queues[probation].Back()
+		if n == nil {
+			n = p.queues[protected].Back()
+		}
+		if n == nil || p.weights[window]+uint64(n.Weight) > p.windowMax {
+			return
+		}
+		p.move(n, window)
+		quota -= min(quota, uint64(n.Weight))
+	}
 }
 
 func (p *Policy[K, V]) resetWindow() {

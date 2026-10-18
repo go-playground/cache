@@ -63,6 +63,25 @@ func (m *model) record(hit bool) {
 	limit := m.capacity * 80 / 100
 	m.windowTarget = min(max(m.windowTarget+amount, 0), float64(limit))
 	m.sizeWindow(min(uint64(m.windowTarget), limit))
+	if amount > 0 {
+		m.growWindow()
+	}
+}
+
+func (m *model) growWindow() {
+	for quota := uint64(windowTransferQuota); quota > 0; {
+		q := uint32(probation)
+		if len(m.queues[probation]) == 0 {
+			q = protected
+		}
+		last := len(m.queues[q]) - 1
+		if last < 0 || m.weight(window)+uint64(m.queues[q][last].weight) > m.windowMax {
+			return
+		}
+		e := m.take(q, last)
+		m.pushFront(window, e)
+		quota -= min(quota, uint64(e.weight))
+	}
 }
 
 func (m *model) weight(q uint32) uint64 {
@@ -132,6 +151,7 @@ func (m *model) update(e entry) []int {
 	m.queues[q][i] = e
 	m.sketch.Increment(hashOf(e.key))
 	m.record(true)
+	q, i = m.find(e.key) // the climber may have moved it into the window
 	var evicted []int
 	if m.rejects(e) {
 		m.take(q, i)
