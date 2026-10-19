@@ -1,4 +1,5 @@
-// Package benchmarks compares cache v2 against v1 and popular Go caches on throughput and hit ratio.
+// Package benchmarks tests cache v2 against v1 and other Go caches implementing the same algorithms, on throughput,
+// hit ratio and memory, to verify it holds up. Results are grouped by algorithm so like is compared with like.
 //
 // It is a separate module so the library itself stays free of these dependencies.
 package benchmarks
@@ -11,6 +12,8 @@ import (
 	lruv1 "github.com/go-playground/cache/lru"
 	hashicorp "github.com/hashicorp/golang-lru/v2"
 	"github.com/maypok86/otter/v2"
+	fifos3 "github.com/scalalang2/golang-fifo/s3fifo"
+	fifosieve "github.com/scalalang2/golang-fifo/sieve"
 
 	cache "github.com/go-playground/cache/v2"
 	"github.com/go-playground/cache/v2/lfu"
@@ -30,24 +33,38 @@ type Cache interface {
 // Impl constructs a cache bounded to capacity entries.
 type Impl struct {
 	Name string
-	New  func(capacity int) Cache
+	// Algorithm groups implementations of the same eviction algorithm so results compare like with like.
+	Algorithm string
+	New       func(capacity int) Cache
 	// Bounded is false for baselines that never evict, which are excluded from hit-ratio comparisons.
 	Bounded bool
 }
 
+// Algorithms groups.
+const (
+	AlgLRU     = "LRU"
+	AlgLFU     = "LFU"
+	AlgTinyLFU = "TinyLFU"
+	AlgS3FIFO  = "S3-FIFO"
+	AlgSIEVE   = "SIEVE"
+	AlgMap     = "unbounded map"
+)
+
 // Impls lists every compared implementation.
 func Impls() []Impl {
 	return []Impl{
-		{"v2-tinylfu", func(c int) Cache { return v2{tinylfu.New[int, int](uint64(c)).Build()} }, true},
-		{"v2-s3fifo", func(c int) Cache { return v2{s3fifo.New[int, int](uint64(c)).Build()} }, true},
-		{"v2-lru", func(c int) Cache { return v2{lru.New[int, int](uint64(c)).Build()} }, true},
-		{"v2-lfu", func(c int) Cache { return v2{lfu.New[int, int](uint64(c)).Build()} }, true},
-		{"v1-lru", func(c int) Cache { return v1lru{lruv1.New[int, int](c).BuildThreadSafe()} }, true},
-		{"v1-lfu", func(c int) Cache { return v1lfu{lfuv1.New[int, int](c).BuildThreadSafe()} }, true},
-		{"otter", newOtter, true},
-		{"ristretto", newRistretto, true},
-		{"hashicorp-lru", newHashicorp, true},
-		{"sync.Map", func(int) Cache { return &syncMap{} }, false},
+		{"v2-lru", AlgLRU, func(c int) Cache { return v2{lru.New[int, int](uint64(c)).Build()} }, true},
+		{"v1-lru", AlgLRU, func(c int) Cache { return v1lru{lruv1.New[int, int](c).BuildThreadSafe()} }, true},
+		{"hashicorp-lru", AlgLRU, newHashicorp, true},
+		{"v2-lfu", AlgLFU, func(c int) Cache { return v2{lfu.New[int, int](uint64(c)).Build()} }, true},
+		{"v1-lfu", AlgLFU, func(c int) Cache { return v1lfu{lfuv1.New[int, int](c).BuildThreadSafe()} }, true},
+		{"v2-tinylfu", AlgTinyLFU, func(c int) Cache { return v2{tinylfu.New[int, int](uint64(c)).Build()} }, true},
+		{"otter", AlgTinyLFU, newOtter, true},
+		{"ristretto", AlgTinyLFU, newRistretto, true},
+		{"v2-s3fifo", AlgS3FIFO, func(c int) Cache { return v2{s3fifo.New[int, int](uint64(c)).Build()} }, true},
+		{"golang-fifo-s3fifo", AlgS3FIFO, newFifoS3, true},
+		{"golang-fifo-sieve", AlgSIEVE, newFifoSieve, true},
+		{"sync.Map", AlgMap, func(int) Cache { return &syncMap{} }, false},
 	}
 }
 
@@ -123,6 +140,28 @@ func (a hashicorpCache) Get(k int) bool {
 }
 func (a hashicorpCache) Set(k, v int) { a.c.Add(k, v) }
 func (a hashicorpCache) Flush()       {}
+
+type fifoS3 struct{ c *fifos3.S3FIFO[int, int] }
+
+func newFifoS3(capacity int) Cache { return fifoS3{fifos3.New[int, int](capacity, 0)} }
+
+func (a fifoS3) Get(k int) bool {
+	_, ok := a.c.Get(k)
+	return ok
+}
+func (a fifoS3) Set(k, v int) { a.c.Set(k, v) }
+func (a fifoS3) Flush()       {}
+
+type fifoSieve struct{ c *fifosieve.Sieve[int, int] }
+
+func newFifoSieve(capacity int) Cache { return fifoSieve{fifosieve.New[int, int](capacity, 0)} }
+
+func (a fifoSieve) Get(k int) bool {
+	_, ok := a.c.Get(k)
+	return ok
+}
+func (a fifoSieve) Set(k, v int) { a.c.Set(k, v) }
+func (a fifoSieve) Flush()       {}
 
 type syncMap struct{ m sync.Map }
 

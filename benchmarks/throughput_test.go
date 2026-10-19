@@ -22,12 +22,14 @@ var throughputTrace = ZipfTrace(traceLen, throughputKeys, 1.0, 42)
 func BenchmarkThroughput(b *testing.B) {
 	for _, readPct := range []int{100, 75, 50, 0} {
 		for _, impl := range Impls() {
-			// Built and prefilled once per sub-benchmark, on first use, since b.Run's function is invoked repeatedly
-			// while calibrating b.N and filtered-out sub-benchmarks should cost nothing.
+			// Built and prefilled on first use, since b.Run's function is invoked repeatedly while calibrating b.N and
+			// filtered-out sub-benchmarks should cost nothing, and rebuilt whenever -cpu changes GOMAXPROCS: caches
+			// choose their engine from GOMAXPROCS when built, as they would in a program with that many cores.
 			var c Cache
+			var builtFor int
 			b.Run(fmt.Sprintf("reads=%d%%/%s", readPct, impl.Name), func(b *testing.B) {
-				if c == nil {
-					c = prefilled(impl)
+				if procs := runtime.GOMAXPROCS(0); c == nil || builtFor != procs {
+					c, builtFor = prefilled(impl), procs
 				}
 				b.ReportAllocs()
 				b.ResetTimer()

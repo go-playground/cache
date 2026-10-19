@@ -2,8 +2,9 @@
 //
 // The design follows CLHT: every bucket is one cache line holding a mutex, a word of one-byte tags and five node
 // slots, chained to overflow buckets. Readers only perform atomic loads, so hot keys never bounce cache lines between
-// reading cores. Writers lock the root bucket of the chain they modify. The table doubles once it exceeds a 0.75 load
-// factor and never shrinks; replaced tables are left intact so readers still holding them stay correct.
+// reading cores. Writers lock the root bucket of the chain they modify. When an insert needs an overflow bucket while
+// the table is above a 0.75 load factor, it grows: doubling, or less on the final step to its bound, never past
+// MaxEntries, and never shrinking. Replaced tables are left intact so readers still holding them stay correct.
 //
 // Callers compute the hash: index uses its low bits and the tag its top 7 bits, so it must be well mixed.
 package table
@@ -19,6 +20,7 @@ type Table[K comparable, V any] struct {
 	cur        atomic.Pointer[state[K, V]]
 	resizes    atomic.Uint64
 	maxBuckets int
+	unsync     bool
 }
 
 // New creates an unbounded table pre-sized so that sizeHint entries fit without resizing. sizeHint <= 0 means a small
@@ -27,10 +29,19 @@ func New[K comparable, V any](sizeHint int) *Table[K, V] {
 	return NewBounded[K, V](sizeHint, 0)
 }
 
+// NewUnsynchronized is NewBounded for a caller that serialises every operation itself, e.g. with its own mutex. Its
+// writes skip bucket locking.
+func NewUnsynchronized[K comparable, V any](sizeHint, maxEntries int) *Table[K, V] {
+	t := NewBounded[K, V](sizeHint, maxEntries)
+	t.unsync = true
+	return t
+}
+
 // NewBounded creates a table pre-sized for sizeHint entries that never grows beyond what maxEntries needs, so a table
 // for a bounded cache ends exactly sized for its capacity. maxEntries <= 0 means unbounded.
 func NewBounded[K comparable, V any](sizeHint, maxEntries int) *Table[K, V] {
-	t := &Table[K, V]{}
+	// Unbounded tables still stop at MaxEntries, keeping range reduction within 32 bits.
+	t := &Table[K, V]{maxBuckets: bucketsFor(MaxEntries)}
 	if maxEntries > 0 {
 		t.maxBuckets = bucketsFor(maxEntries)
 	}
@@ -59,7 +70,7 @@ func (t *Table[K, V]) Get(hash uint64, key K) *node.Node[K, V] {
 func (t *Table[K, V]) Store(n *node.Node[K, V]) (old *node.Node[K, V]) {
 	s, root := t.lockRoot(n.Hash)
 	old, overflowed := s.store(root, n)
-	root.mu.Unlock()
+	t.unlock(root)
 	if overflowed && s.size() > s.resizeAt {
 		t.grow(s)
 	}
@@ -70,7 +81,7 @@ func (t *Table[K, V]) Store(n *node.Node[K, V]) (old *node.Node[K, V]) {
 func (t *Table[K, V]) Delete(hash uint64, key K) (old *node.Node[K, V]) {
 	s, root := t.lockRoot(hash)
 	old = s.delete(root, hash, key)
-	root.mu.Unlock()
+	t.unlock(root)
 	return old
 }
 
@@ -78,7 +89,7 @@ func (t *Table[K, V]) Delete(hash uint64, key K) (old *node.Node[K, V]) {
 func (t *Table[K, V]) DeleteNode(n *node.Node[K, V]) bool {
 	s, root := t.lockRoot(n.Hash)
 	ok := s.deleteNode(root, n)
-	root.mu.Unlock()
+	t.unlock(root)
 	return ok
 }
 
@@ -123,7 +134,7 @@ func (t *Table[K, V]) Buckets() int {
 
 // Len returns the number of mapped nodes (may be momentarily stale under concurrency, exact when quiescent).
 func (t *Table[K, V]) Len() int {
-	return int(max(t.cur.Load().size(), 0))
+	return int(t.cur.Load().size())
 }
 
 // lockRoot returns the current state with the root bucket of hash locked, never a frozen state.
@@ -133,6 +144,10 @@ func (t *Table[K, V]) Len() int {
 // the resizer released it is ordered after the freeze by the mutex and sees it set. Writers seeing it set wait for the
 // successor, which is published before resized is closed, so no write is ever lost.
 func (t *Table[K, V]) lockRoot(hash uint64) (*state[K, V], *bucket[K, V]) {
+	if t.unsync {
+		s := t.cur.Load()
+		return s, s.root(hash)
+	}
 	for {
 		s := t.cur.Load()
 		root := s.root(hash)
@@ -142,6 +157,12 @@ func (t *Table[K, V]) lockRoot(hash uint64) (*state[K, V], *bucket[K, V]) {
 		}
 		root.mu.Unlock()
 		<-s.resized
+	}
+}
+
+func (t *Table[K, V]) unlock(root *bucket[K, V]) {
+	if !t.unsync {
+		root.mu.Unlock()
 	}
 }
 
@@ -164,9 +185,11 @@ func (t *Table[K, V]) grow(s *state[K, V]) {
 	oldN := uint64(len(s.buckets))
 	for i := range s.buckets {
 		root := &s.buckets[i]
-		root.mu.Lock()
+		if !t.unsync {
+			root.mu.Lock()
+		}
 		ns.copyChain(root, uint64(i), oldN)
-		root.mu.Unlock()
+		t.unlock(root)
 	}
 	t.cur.Store(ns)
 	t.resizes.Add(1)

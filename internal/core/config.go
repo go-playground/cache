@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/go-playground/cache/v2/internal/policy"
+	"github.com/go-playground/cache/v2/internal/table"
 )
 
 // Cause is why an entry was evicted.
@@ -38,9 +39,16 @@ type Config[K comparable, V any] struct {
 	recordStats bool
 }
 
+// MaxEntries is the largest entry capacity; larger entry capacities are clamped to it. Weighted capacities, which are
+// total weights rather than entry counts, are not limited.
+const MaxEntries = table.MaxEntries
+
 // NewConfig returns a Config with defaults: no expiry, no eviction callback and no statistics.
-// A nil weigher weighs every entry as 1.
+// A nil weigher weighs every entry as 1, making capacity an entry count, which is clamped to MaxEntries.
 func NewConfig[K comparable, V any](capacity uint64, weigher func(K, V) uint32, newPolicy func(capacity uint64) policy.Policy[K, V]) Config[K, V] {
+	if weigher == nil {
+		capacity = min(capacity, MaxEntries)
+	}
 	return Config[K, V]{capacity: capacity, weigher: weigher, newPolicy: newPolicy}
 }
 

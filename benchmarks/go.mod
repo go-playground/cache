@@ -10,6 +10,7 @@ require (
 	github.com/go-playground/cache/v2 v2.0.0-00010101000000-000000000000
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/maypok86/otter/v2 v2.3.0
+	github.com/scalalang2/golang-fifo v1.2.0
 )
 
 require (

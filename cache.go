@@ -7,8 +7,16 @@
 //	tinylfu.New[string, User](10_000).Build() // W-TinyLFU: best general purpose hit ratio
 //	s3fifo.New[string, User](10_000).Build()  // S3-FIFO: fastest reads, scan resistant
 //
-// All methods are safe for concurrent use. Reads are lock-free; eviction bookkeeping is batched and amortised onto
-// callers, so a cache needs no background goroutine and no Close.
+// All methods are safe for concurrent use, and a cache needs no background goroutine and no Close.
+//
+// A cache picks its engine automatically when built, from the processors available to the program (GOMAXPROCS):
+//   - With one processor, goroutines never run in parallel, so it uses a single mutex, applies eviction bookkeeping
+//     immediately and updates existing entries in place without allocating.
+//   - With more, reads are lock-free and eviction bookkeeping is buffered and applied in batches by whichever caller
+//     acquires the lock, so cores rarely contend.
+//
+// Both engines behave identically. The choice is made once per cache: if GOMAXPROCS changes afterwards, existing
+// caches keep their engine.
 package cache
 
 import (
@@ -49,7 +57,7 @@ func (c *Cache[K, V]) Set(key K, value V) {
 	e := c.engine()
 	h := e.Hash(key)
 	c.invalidate(h, key)
-	e.Notify(e.Insert(e.NewNode(h, key, value)))
+	e.Notify(e.SetHashed(h, key, value))
 }
 
 // Remove removes key if present. A GetOrLoad for key that is in flight will not store its result.

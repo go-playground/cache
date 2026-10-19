@@ -2,6 +2,7 @@ package xhash
 
 import (
 	"hash/maphash"
+	"math"
 	"math/bits"
 	"strconv"
 	"testing"
@@ -85,12 +86,19 @@ func TestSmallIntegersUseOnlyTheirOwnBytes(t *testing.T) {
 	}
 }
 
+// assertUniform checks counts with a chi-square goodness-of-fit test. With k buckets the statistic has mean k-1 and
+// standard deviation sqrt(2(k-1)); a well mixed hash essentially never exceeds 6 standard deviations, while a poor one
+// (e.g. identity on sequential keys) exceeds it by orders of magnitude.
 func assertUniform(t *testing.T, name string, counts []int, expected int) {
 	t.Helper()
-	for i, c := range counts {
-		if c < expected/2 || c > expected*2 {
-			t.Fatalf("%s: bucket %d has %d entries, expected ~%d", name, i, c, expected)
-		}
+	var chi2 float64
+	for _, c := range counts {
+		d := float64(c - expected)
+		chi2 += d * d / float64(expected)
+	}
+	dof := float64(len(counts) - 1)
+	if limit := dof + 6*math.Sqrt(2*dof); chi2 > limit {
+		t.Fatalf("%s: chi-square %.0f exceeds %.0f, distribution is not uniform", name, chi2, limit)
 	}
 }
 

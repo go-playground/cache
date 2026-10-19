@@ -25,7 +25,12 @@ type Builder[K comparable, V any] struct {
 }
 
 // New returns a builder for an S3-FIFO cache holding at most capacity entries.
-// A capacity of 0 creates a cache that retains nothing.
+// A capacity of 0 creates a cache that retains nothing, and a capacity above cache.MaxEntries (about 1.07 billion) is
+// treated as cache.MaxEntries.
+//
+// Building the cache reserves its index up front, about 17 bytes per entry of capacity (e.g. 1.7MB for 100k entries,
+// 17MB for 1M), so it never resizes. Entries themselves are allocated as they are stored, costing their key and value
+// plus 48 bytes each.
 func New[K comparable, V any](capacity uint64) *Builder[K, V] {
 	return NewWeighted[K, V](capacity, nil)
 }
@@ -33,6 +38,9 @@ func New[K comparable, V any](capacity uint64) *Builder[K, V] {
 // NewWeighted returns a builder for an S3-FIFO cache whose entries' total weight, as reported by weigher, is at
 // most capacity. Use a built-in weigher such as cache.WeighByLen or cache.WeighBySize, or any func(K, V) uint32.
 // A nil weigher weighs every entry as 1. An entry heavier than capacity is never retained.
+//
+// The number of entries a weighted cache holds is unknown up front, so its index starts small and grows as entries
+// are stored. With a nil weigher it reserves its index up front like New.
 func NewWeighted[K comparable, V any](capacity uint64, weigher cache.Weigher[K, V]) *Builder[K, V] {
 	b := &Builder[K, V]{}
 	b.cfg = core.NewConfig(capacity, weigher, b.newPolicy)

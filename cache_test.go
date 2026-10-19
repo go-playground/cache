@@ -258,3 +258,12 @@ func TestStats(t *testing.T) {
 		t.Fatal("hit ratio with no lookups must be 0")
 	}
 }
+
+// TestWeightedCapacityIsNotClamped checks weighted capacities, which are total weights, may exceed MaxEntries. Entry
+// capacity clamping is tested on the config, since building a cache that large really reserves its ~18GB index.
+func TestWeightedCapacityIsNotClamped(t *testing.T) {
+	weighted := lru.NewWeighted[string, []byte](cache.MaxEntries*64, cache.WeighByLen).Build()
+	if got := weighted.Stats().Capacity; got != cache.MaxEntries*64 {
+		t.Fatalf("weighted capacity %d must not be clamped", got)
+	}
+}

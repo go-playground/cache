@@ -38,10 +38,6 @@ const (
 // draining for others under sustained writes. Remaining work is picked up by the next caller.
 const maxDrainRounds = 4
 
-// maxPresize bounds the table presizing for unweighted caches; larger caches grow on demand rather than allocating
-// eagerly for a capacity that may be used to mean "practically unbounded".
-const maxPresize = 1 << 16
-
 // writeStripeSize is each write buffer stripe's capacity; a full stripe makes its writer drain synchronously. Smaller
 // stripes (32, 64) measured 15-40% slower on concurrent writes, and stripes are only added under contention.
 const writeStripeSize = 128
@@ -94,6 +90,7 @@ type Engine[K comparable, V any] struct {
 	writes   *writebuf.Striped[task[K, V]]
 	capacity uint64
 	weigher  func(K, V) uint32
+	direct   bool
 
 	expiryMode expiryMode
 	ttl        int64
@@ -112,6 +109,9 @@ type Engine[K comparable, V any] struct {
 	// The padding keeps them on separate cache lines so maintenance does not invalidate readers' cached copies.
 	_ [xruntime.CacheLine]byte
 
+	// mu serialises all eviction bookkeeping: the policy and every call into it, draining the read and write
+	// buffers (making the holder their single consumer), each node's slot and in-policy flag, and every field below.
+	// In the direct mode it also guards every table access and in-place value update.
 	mu     sync.Mutex
 	status atomic.Uint32
 	_      [xruntime.CacheLine - 12]byte
@@ -138,7 +138,7 @@ func NewEngine[K comparable, V any](cfg Config[K, V]) *Engine[K, V] {
 	}
 	e := &Engine[K, V]{
 		hasher:     xhash.New[K](),
-		table:      newTable(cfg),
+		table:      nil,
 		policy:     cfg.newPolicy(cfg.capacity),
 		writes:     writebuf.NewStriped[task[K, V]](writeStripeSize),
 		capacity:   cfg.capacity,
@@ -149,7 +149,11 @@ func NewEngine[K comparable, V any](cfg Config[K, V]) *Engine[K, V] {
 		now:        clock,
 		onEviction: cfg.onEviction,
 	}
-	if inline, ok := e.policy.(policy.InlineAccessor[K, V]); ok {
+	e.direct = chooseDirect()
+	e.table = newTable(cfg, e.direct)
+	if e.direct {
+		e.writes = nil
+	} else if inline, ok := e.policy.(policy.InlineAccessor[K, V]); ok {
 		e.inline = inline
 	} else {
 		e.reads = readbuf.New[node.Node[K, V]]()
@@ -168,13 +172,19 @@ func clock() int64 {
 	return int64(timeext.NewInstant())
 }
 
-// newTable presizes the table for up to maxPresize entries and, for unweighted caches whose capacity is an entry
-// count, bounds its growth to exactly what capacity needs.
-func newTable[K comparable, V any](cfg Config[K, V]) *table.Table[K, V] {
-	if cfg.weigher != nil {
-		return table.New[K, V](0)
+// newTable sizes the table for unweighted caches, whose capacity is an entry count, exactly for capacity up front, so
+// it never grows. Weighted caches cannot know their entry count, so their table starts small and grows on demand.
+// The direct mode serialises every operation under its own mutex, so its table skips bucket locking.
+func newTable[K comparable, V any](cfg Config[K, V], direct bool) *table.Table[K, V] {
+	hint, bound := 0, 0
+	if cfg.weigher == nil {
+		hint = int(min(cfg.capacity, math.MaxInt32))
+		bound = hint
 	}
-	return table.NewBounded[K, V](int(min(cfg.capacity, maxPresize)), int(min(cfg.capacity, math.MaxInt32)))
+	if direct {
+		return table.NewUnsynchronized[K, V](hint, bound)
+	}
+	return table.NewBounded[K, V](hint, bound)
 }
 
 // SetClockForTesting replaces the monotonic clock. Only for tests, before any use of the engine.
@@ -194,6 +204,9 @@ func (e *Engine[K, V]) Get(k K) optionext.Option[V] {
 
 // GetHashed is Get with a precomputed hash.
 func (e *Engine[K, V]) GetHashed(h uint64, k K) optionext.Option[V] {
+	if e.direct {
+		return e.getDirect(h, k)
+	}
 	n := e.table.Get(h, k)
 	if n == nil {
 		e.recordMiss()
@@ -210,6 +223,9 @@ func (e *Engine[K, V]) GetHashed(h uint64, k K) optionext.Option[V] {
 
 // PeekHashed returns the live value for k without recording an access or statistics.
 func (e *Engine[K, V]) PeekHashed(h uint64, k K) optionext.Option[V] {
+	if e.direct {
+		return e.peekDirect(h, k)
+	}
 	n := e.table.Get(h, k)
 	if n == nil || n.IsExpired(e.now()) {
 		return optionext.None[V]()
@@ -244,7 +260,15 @@ func (e *Engine[K, V]) recordAccess(n *node.Node[K, V]) {
 
 // Set maps k to v, replacing any existing value.
 func (e *Engine[K, V]) Set(k K, v V) {
-	e.Notify(e.Insert(e.NewNode(e.hasher.Hash(k), k, v)))
+	e.Notify(e.SetHashed(e.hasher.Hash(k), k, v))
+}
+
+// SetHashed is Set with a precomputed hash, returning rather than delivering eviction notifications.
+func (e *Engine[K, V]) SetHashed(h uint64, k K, v V) Evictions[K, V] {
+	if e.direct {
+		return e.setDirect(h, k, v)
+	}
+	return e.Insert(e.NewNode(h, k, v))
 }
 
 // NewNode prepares an entry for Insert, running the user's weigher and expiry function. Kept separate from Insert so
@@ -260,6 +284,9 @@ func (e *Engine[K, V]) NewNode(h uint64, k K, v V) *Node[K, V] {
 // Insert publishes n, replacing any existing entry for its key, and returns rather than delivers eviction
 // notifications so callers holding their own locks can deliver them after releasing those locks. Runs no user code.
 func (e *Engine[K, V]) Insert(n *Node[K, V]) Evictions[K, V] {
+	if e.direct {
+		return e.insertDirect(n)
+	}
 	if e.stats != nil {
 		e.stats.sets.Add(1)
 	}
@@ -305,6 +332,10 @@ func (e *Engine[K, V]) Remove(k K) {
 
 // RemoveHashed is Remove with a precomputed hash.
 func (e *Engine[K, V]) RemoveHashed(h uint64, k K) {
+	if e.direct {
+		e.removeDirect(h, k)
+		return
+	}
 	old := e.table.Delete(h, k)
 	if old == nil {
 		return
@@ -383,7 +414,10 @@ func (e *Engine[K, V]) recordMiss() {
 func (e *Engine[K, V]) Drain() {
 	e.Notify(e.locked(func() {
 		if e.expiryMode != expireNever {
-			e.sweepCursor = e.table.Scan(e.sweepCursor, e.table.Buckets(), e.onSweepFn)
+			e.table.Range(func(n *node.Node[K, V]) bool {
+				e.onSweepFn(n)
+				return true
+			})
 		}
 	}))
 }
@@ -505,7 +539,9 @@ func (e *Engine[K, V]) onSweep(n *node.Node[K, V]) {
 }
 
 func (e *Engine[K, V]) drainWrites() {
-	e.writes.Drain(e.applyFn)
+	if e.writes != nil {
+		e.writes.Drain(e.applyFn)
+	}
 }
 
 func (e *Engine[K, V]) apply(t task[K, V]) {

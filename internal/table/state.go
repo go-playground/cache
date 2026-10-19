@@ -12,11 +12,14 @@ import (
 
 const (
 	minBuckets     = 4
-	maxHint        = 1 << 30
+	maxHint        = MaxEntries
 	loadNum        = 3
 	loadDen        = 4
 	stripesPerProc = 4
 )
+
+// MaxEntries is the most entries a table is sized for; beyond it buckets overflow into ever longer chains.
+const MaxEntries = 1 << 30
 
 // stripe is one cache-line padded slice of the size counter.
 type stripe struct {
@@ -37,13 +40,14 @@ type state[K comparable, V any] struct {
 }
 
 func newState[K comparable, V any](n int) *state[K, V] {
-	ns := min(n, nextPow2(runtime.GOMAXPROCS(0)*stripesPerProc))
+	// A power of two no larger than n, so the mask reaches every stripe and small tables are not over-striped.
+	ns := min(1<<(bits.Len(uint(n))-1), nextPow2(runtime.GOMAXPROCS(0)*stripesPerProc))
 	return &state[K, V]{
 		buckets:    make([]bucket[K, V], n),
 		stripes:    make([]stripe, ns),
 		n:          uint64(n),
 		stripeMask: uint64(ns - 1),
-		resizeAt:   int64(n * slotsPerBucket * loadNum / loadDen),
+		resizeAt:   int64(n) * slotsPerBucket * loadNum / loadDen,
 		resized:    make(chan struct{}),
 	}
 }
@@ -51,10 +55,10 @@ func newState[K comparable, V any](n int) *state[K, V] {
 // bucketsFor returns the smallest root bucket count whose resize threshold is at least sizeHint. Bucket counts need
 // not be powers of two, so a table sized for a capacity wastes no memory to rounding.
 func bucketsFor(sizeHint int) int {
-	sizeHint = min(max(sizeHint, 0), maxHint)
-	den := slotsPerBucket * loadNum
-	need := (sizeHint*loadDen + den - 1) / den
-	return max(need, minBuckets)
+	hint := int64(min(max(sizeHint, 0), maxHint))
+	const den = slotsPerBucket * loadNum
+	need := (hint*loadDen + den - 1) / den // int64: hint*loadDen overflows a 32-bit int
+	return max(int(need), minBuckets)
 }
 
 func nextPow2(n int) int {
@@ -76,7 +80,8 @@ func (s *state[K, V]) stripeFor(hash uint64) *stripe {
 	return &s.stripes[hash&s.stripeMask]
 }
 
-// size sums the stripes. Individual stripes may be negative; the sum is exact when quiescent.
+// size sums the stripes. A node's increment and decrement always land on the same stripe of the same state, so no
+// stripe is negative; the sum is exact when quiescent.
 func (s *state[K, V]) size() int64 {
 	var sum int64
 	for i := range s.stripes {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -34,6 +35,40 @@ func baseline() uint64 {
 // S3-FIFO's ghost queue and TinyLFU's sketch is populated.
 const churnCapacity = 100_000
 
+// contentionGrowth returns how much a cache's retained memory grows once it has been used from every processor at
+// once, i.e. the cost of buffers that expand under contention. The same 500 entries are present before and after.
+func contentionGrowth(impl Impl) int64 {
+	c := impl.New(1000)
+	for k := range 500 {
+		c.Set(k, k)
+	}
+	c.Flush()
+	before := baseline()
+	hammer(c)
+	after := baseline()
+	runtime.KeepAlive(c)
+	return int64(after) - int64(before)
+}
+
+// hammer reads and overwrites 500 existing keys from GOMAXPROCS goroutines at once.
+func hammer(c Cache) {
+	var wg sync.WaitGroup
+	for g := range runtime.GOMAXPROCS(0) {
+		wg.Go(func() {
+			for i := range 200_000 {
+				k := (g*7 + i) % 500
+				if i%4 == 0 {
+					c.Set(k, i)
+				} else {
+					c.Get(k)
+				}
+			}
+		})
+	}
+	wg.Wait()
+	c.Flush()
+}
+
 // TestMemory reports retained heap per entry for full int→int caches and the fixed overhead of an empty cache. Set
 // MEMORY=1 to run it.
 //
@@ -44,17 +79,18 @@ func TestMemory(t *testing.T) {
 	}
 	sizes := []int{10_000, 100_000, 1_000_000}
 	var sb strings.Builder
-	sb.WriteString("| cache | empty cache (bytes) |")
+	fmt.Fprintf(&sb, "GOMAXPROCS=%d\n\n| cache | empty cache (bytes) | growth under concurrent use (bytes) |", runtime.GOMAXPROCS(0))
 	for _, n := range sizes {
 		fmt.Fprintf(&sb, " bytes/entry @%d |", n)
 	}
 	fmt.Fprintf(&sb, " bytes/entry @%d after 3x churn |", churnCapacity)
-	fmt.Fprintf(&sb, "\n|---|---|%s\n", strings.Repeat("---|", len(sizes)+1))
+	fmt.Fprintf(&sb, "\n|---|---|---|%s\n", strings.Repeat("---|", len(sizes)+1))
 	for _, impl := range Impls() {
 		before := baseline()
 		after, empty := heapAfter(impl, 1000, 0)
 		fmt.Fprintf(&sb, "| %s | %d |", impl.Name, int64(after)-int64(before))
 		runtime.KeepAlive(empty)
+		fmt.Fprintf(&sb, " %d |", contentionGrowth(impl))
 		for _, n := range sizes {
 			before := baseline()
 			after, c := heapAfter(impl, n, n)

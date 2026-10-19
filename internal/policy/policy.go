@@ -22,6 +22,7 @@ type Policy[K comparable, V any] interface {
 	// Update replaces old with n, inheriting old's queue and frequency, and records the write as an access in the
 	// policy's own terms. It then evicts until total weight is within capacity, possibly evicting n itself.
 	// old is tracked by the policy and n is not; after Update old is no longer tracked and evict is not called for it.
+	// old and n may also be the same node, for an in-place update of a node whose Weight is unchanged.
 	Update(old, n *node.Node[K, V], evict EvictFunc[K, V])
 
 	// Remove stops tracking n, which is tracked by the policy.

@@ -102,8 +102,12 @@ func (d *Deque[K, V]) MoveToBack(n *node.Node[K, V]) {
 	d.PushBack(n)
 }
 
-// Replace puts n in old's position. old must be in this deque and n must not be in any deque.
+// Replace puts n in old's position. old must be in this deque and n must either be old, a no-op, or not be in any
+// deque.
 func (d *Deque[K, V]) Replace(old, n *node.Node[K, V]) {
+	if old == n {
+		return
+	}
 	prev, next := old.Prev(), old.Next()
 	n.SetPrev(prev)
 	n.SetNext(next)

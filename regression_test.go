@@ -109,16 +109,19 @@ func TestHugeTTLNeverWrapsToExpired(t *testing.T) {
 	}
 }
 
-func TestHugeCapacityDoesNotPreallocate(t *testing.T) {
+// TestCapacityReservesTheIndexUpFront pins the documented cost of New: about 17 bytes of index per entry of
+// capacity, allocated when the cache is built so it never grows.
+func TestCapacityReservesTheIndexUpFront(t *testing.T) {
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&before)
-	c := lru.New[string, int](1 << 40).Build()
+	c := lru.New[int, int](1_000_000).Build()
 	runtime.ReadMemStats(&after)
-	if grew := after.TotalAlloc - before.TotalAlloc; grew > 32<<20 {
-		t.Fatalf("building allocated %d bytes up front", grew)
+	grew := after.TotalAlloc - before.TotalAlloc
+	if grew < 16<<20 || grew > 20<<20 {
+		t.Fatalf("building a 1M entry cache allocated %d bytes, want ~17MB of index", grew)
 	}
-	c.Set("a", 1)
+	c.Set(1, 1)
 }
 
 func TestZeroWeightIsTreatedAsOne(t *testing.T) {

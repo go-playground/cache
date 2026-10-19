@@ -2,6 +2,10 @@ package cache
 
 import "github.com/go-playground/cache/v2/internal/core"
 
+// MaxEntries is the largest entry capacity, about 1.07 billion. Builders clamp larger entry capacities to it; weighted
+// capacities are total weights and are not limited.
+const MaxEntries = core.MaxEntries
+
 // Cause is why an entry was evicted.
 type Cause uint8
 
