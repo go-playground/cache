@@ -72,7 +72,9 @@ type v2 struct{ c *cache.Cache[int, int] }
 
 func (a v2) Get(k int) bool { return a.c.Get(k).IsSome() }
 func (a v2) Set(k, v int)   { a.c.Set(k, v) }
-func (a v2) Flush()         {}
+
+// Flush runs any pending maintenance, so measurements see a cache at rest rather than mid-drain.
+func (a v2) Flush() { a.c.Stats() }
 
 type v1lru struct {
 	c lruv1.ThreadSafeCache[int, int]
@@ -101,7 +103,9 @@ func (a otterCache) Get(k int) bool {
 	return ok
 }
 func (a otterCache) Set(k, v int) { a.c.Set(k, v) }
-func (a otterCache) Flush()       {}
+
+// Flush runs otter's asynchronous maintenance to completion.
+func (a otterCache) Flush() { a.c.CleanUp() }
 
 type ristrettoCache struct{ c *ristretto.Cache[int, int] }
 
@@ -110,6 +114,9 @@ func newRistretto(capacity int) Cache {
 		NumCounters: int64(capacity) * 10,
 		MaxCost:     int64(capacity),
 		BufferItems: 64,
+		// Without this ristretto adds its own ~56 B item overhead to every cost of 1 and holds only capacity/57
+		// entries, which invalidates every comparison.
+		IgnoreInternalCost: true,
 	})
 	if err != nil {
 		panic(err)

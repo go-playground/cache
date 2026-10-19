@@ -144,12 +144,18 @@ func (p *Policy[K, V]) rejects(n *node.Node[K, V]) bool {
 	return p.capacity == 0 || uint64(n.Weight) > p.capacity
 }
 
+// growSketch keeps the sketch sized for the entries tracked. For a weighted cache, whose capacity is a total weight,
+// the entry count is only known as it fills, so the climber's sample size follows the sketch's capacity: its first
+// sample after each growth covers 10x the entries actually held rather than 10x a weight.
 func (p *Policy[K, V]) growSketch() {
 	if p.count+1 <= p.sketchCap {
 		return
 	}
 	p.sketch.EnsureCapacity(p.count + 1)
 	p.sketchCap = p.sketch.Capacity()
+	if p.adaptive && p.sketchCap < int(min(p.capacity, 1<<62)) {
+		p.climber.resample(uint64(p.sketchCap))
+	}
 }
 
 func (p *Policy[K, V]) record(hit bool) {

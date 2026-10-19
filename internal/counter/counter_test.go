@@ -54,3 +54,27 @@ func BenchmarkAddParallel(b *testing.B) {
 		}
 	})
 }
+
+func TestSetCountersAreIndependentAndSumAcrossGoroutines(t *testing.T) {
+	s := NewSet()
+	const goroutines, per = 16, 5_000
+	var wg sync.WaitGroup
+	for range goroutines {
+		wg.Go(func() {
+			for range per {
+				s.Add(0, 1)
+				s.Add(Width-1, 2)
+			}
+		})
+	}
+	wg.Wait()
+	if s.Value(0) != goroutines*per || s.Value(Width-1) != 2*goroutines*per || s.Value(1) != 0 {
+		t.Fatalf("got %d %d %d", s.Value(0), s.Value(Width-1), s.Value(1))
+	}
+}
+
+func TestSetStripeIsOneCacheLine(t *testing.T) {
+	if got := unsafe.Sizeof(setStripe{}); got != xruntime.CacheLine {
+		t.Fatalf("set stripe is %d bytes, want %d", got, xruntime.CacheLine)
+	}
+}

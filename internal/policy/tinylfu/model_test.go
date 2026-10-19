@@ -126,6 +126,9 @@ func (m *model) rejects(e entry) bool {
 func (m *model) add(e entry) []int {
 	if m.count()+1 > m.sketch.Capacity() {
 		m.sketch.EnsureCapacity(m.count() + 1)
+		if m.adaptive && m.sketch.Capacity() < int(min(m.capacity, 1<<62)) {
+			m.climber.resample(uint64(m.sketch.Capacity()))
+		}
 	}
 	m.sketch.Increment(hashOf(e.key))
 	m.record(false)

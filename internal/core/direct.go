@@ -101,12 +101,13 @@ func (e *Engine[K, V]) peekDirect(h uint64, k K) optionext.Option[V] {
 // user's weigher and expiry function run before taking the lock.
 func (e *Engine[K, V]) setDirect(h uint64, k K, v V) Evictions[K, V] {
 	w := e.weigh(k, v)
-	var at int64
+	var now, at int64
 	if e.expiryMode != expireNever {
-		at = e.expiresAt(k, v)
+		now = e.now()
+		at = e.expiresAt(now, k, v)
 	}
 	if e.stats != nil {
-		e.stats.sets.Add(1)
+		e.stats.Add(statSets, 1)
 	}
 	e.mu.Lock()
 	if n := e.table.Get(h, k); n != nil && n.Weight == w && n.InPolicy() {
@@ -122,17 +123,31 @@ func (e *Engine[K, V]) setDirect(h uint64, k K, v V) Evictions[K, V] {
 		}
 		e.publishDirect(n)
 	}
-	return e.finishDirect()
+	return e.finishDirectAt(now)
 }
 
 // insertDirect publishes a prepared node. Used by GetOrLoad, whose node is built before its own locks are taken.
 func (e *Engine[K, V]) insertDirect(n *node.Node[K, V]) Evictions[K, V] {
 	if e.stats != nil {
-		e.stats.sets.Add(1)
+		e.stats.Add(statSets, 1)
 	}
 	e.mu.Lock()
 	e.publishDirect(n)
 	return e.finishDirect()
+}
+
+// insertDirectIf is insertDirect only if n.Key still maps to exactly expected.
+func (e *Engine[K, V]) insertDirectIf(expected, n *node.Node[K, V]) (Evictions[K, V], bool) {
+	e.mu.Lock()
+	if e.table.Get(n.Hash, n.Key) != expected {
+		e.mu.Unlock()
+		return nil, false
+	}
+	if e.stats != nil {
+		e.stats.Add(statSets, 1)
+	}
+	e.publishDirect(n)
+	return e.finishDirect(), true
 }
 
 // publishDirect maps n and applies it to the policy immediately. Requires mu.
@@ -148,8 +163,18 @@ func (e *Engine[K, V]) publishDirect(n *node.Node[K, V]) {
 
 // finishDirect runs a rate-limited expiry sweep, then releases mu returning pending notifications.
 func (e *Engine[K, V]) finishDirect() Evictions[K, V] {
+	var now int64
 	if e.expiryMode != expireNever {
-		e.drainNow = e.now()
+		now = e.now()
+	}
+	return e.finishDirectAt(now)
+}
+
+// finishDirectAt is finishDirect reusing a clock reading the caller already took; a slightly earlier instant only
+// makes the sweep more conservative.
+func (e *Engine[K, V]) finishDirectAt(now int64) Evictions[K, V] {
+	if e.expiryMode != expireNever {
+		e.drainNow = now
 		e.sweep()
 	}
 	evs := e.takePending()

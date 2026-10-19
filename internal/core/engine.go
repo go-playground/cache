@@ -60,6 +60,8 @@ const (
 	taskAdd taskKind = iota
 	taskUpdate
 	taskRemove
+	// taskExpire is a remove for an entry a reader found expired and already unmapped, notified as CauseExpired.
+	taskExpire
 )
 
 type task[K comparable, V any] struct {
@@ -92,13 +94,14 @@ type Engine[K comparable, V any] struct {
 	weigher  func(K, V) uint32
 	direct   bool
 
-	expiryMode expiryMode
-	ttl        int64
-	expireFn   func(K, V) time.Duration
-	now        func() int64
+	expiryMode        expiryMode
+	ttl               int64
+	accessGranularity int64
+	expireFn          func(K, V) time.Duration
+	now               func() int64
 
 	onEviction func(K, V, Cause)
-	stats      *stats
+	stats      *counter.Set
 
 	onEvictFn policy.EvictFunc[K, V]
 	onSweepFn func(*node.Node[K, V])
@@ -127,9 +130,14 @@ type Engine[K comparable, V any] struct {
 	sweepExpired int
 }
 
-type stats struct {
-	hits, misses, sets, loads, loadErrors *counter.Counter
-}
+// Statistic indexes within the engine's counter.Set.
+const (
+	statHits = iota
+	statMisses
+	statSets
+	statLoads
+	statLoadErrors
+)
 
 // NewEngine builds an engine from cfg.
 func NewEngine[K comparable, V any](cfg Config[K, V]) *Engine[K, V] {
@@ -140,26 +148,31 @@ func NewEngine[K comparable, V any](cfg Config[K, V]) *Engine[K, V] {
 		hasher:     xhash.New[K](),
 		table:      nil,
 		policy:     cfg.newPolicy(cfg.capacity),
-		writes:     writebuf.NewStriped[task[K, V]](writeStripeSize),
 		capacity:   cfg.capacity,
 		weigher:    cfg.weigher,
 		expiryMode: cfg.expiryMode,
 		ttl:        int64(cfg.ttl),
-		expireFn:   cfg.expireFn,
-		now:        clock,
-		onEviction: cfg.onEviction,
+		// Readers skip rewriting an expiry that would move by less than this; bounded by the TTL so short TTLs stay
+		// exact instead of expiring early.
+		accessGranularity: min(accessGranularity, int64(cfg.ttl)/8),
+		expireFn:          cfg.expireFn,
+		now:               clock,
+		onEviction:        cfg.onEviction,
 	}
 	e.direct = chooseDirect()
 	e.table = newTable(cfg, e.direct)
+	if !e.direct {
+		e.writes = writebuf.NewStriped[task[K, V]](writeStripeSize)
+	}
 	if e.direct {
-		e.writes = nil
+		// Everything runs under mu with no buffering.
 	} else if inline, ok := e.policy.(policy.InlineAccessor[K, V]); ok {
 		e.inline = inline
 	} else {
 		e.reads = readbuf.New[node.Node[K, V]]()
 	}
 	if cfg.recordStats {
-		e.stats = &stats{counter.New(), counter.New(), counter.New(), counter.New(), counter.New()}
+		e.stats = counter.NewSet()
 	}
 	e.onEvictFn = e.onEvict
 	e.onSweepFn = e.onSweep
@@ -172,14 +185,21 @@ func clock() int64 {
 	return int64(timeext.NewInstant())
 }
 
-// newTable sizes the table for unweighted caches, whose capacity is an entry count, exactly for capacity up front, so
-// it never grows. Weighted caches cannot know their entry count, so their table starts small and grows on demand.
-// The direct mode serialises every operation under its own mutex, so its table skips bucket locking.
+// maxReservedEntries bounds how much of the index is reserved at build. Capacities up to it, which covers nearly all
+// caches, get their whole index up front and never resize. Larger ones start at this size and grow towards their
+// exact bound in a few doublings, so an enormous capacity used to mean "practically unbounded" does not reserve
+// gigabytes (2^30 entries would be 18 GB) for entries that may never arrive.
+const maxReservedEntries = 1 << 20
+
+// newTable sizes the table for unweighted caches, whose capacity is an entry count, for capacity up front (see
+// maxReservedEntries) and bounds its growth to exactly what capacity needs. Weighted caches cannot know their entry
+// count, so their table starts small and grows on demand. The direct mode serialises every operation under its own
+// mutex, so its table skips bucket locking.
 func newTable[K comparable, V any](cfg Config[K, V], direct bool) *table.Table[K, V] {
 	hint, bound := 0, 0
 	if cfg.weigher == nil {
-		hint = int(min(cfg.capacity, math.MaxInt32))
-		bound = hint
+		bound = int(min(cfg.capacity, math.MaxInt32))
+		hint = min(bound, maxReservedEntries)
 	}
 	if direct {
 		return table.NewUnsynchronized[K, V](hint, bound)
@@ -237,15 +257,26 @@ func (e *Engine[K, V]) PeekHashed(h uint64, k K) optionext.Option[V] {
 func (e *Engine[K, V]) touch(n *node.Node[K, V]) bool {
 	now := e.now()
 	if n.IsExpired(now) {
-		e.requestDrain()
+		e.expireOnRead(n)
 		return false
 	}
 	if e.expiryMode == expireAfterAccess {
-		if at := addSaturating(now, e.ttl); at-n.ExpiresAt() >= accessGranularity {
+		if at := addSaturating(now, e.ttl); at-n.ExpiresAt() >= e.accessGranularity {
 			n.SetExpiresAt(at)
 		}
 	}
 	return true
+}
+
+// expireOnRead reclaims an entry a reader found expired, so hot expired keys are freed immediately rather than by the
+// sweep, and every later read misses cheaply instead of requesting a drain. The pointer-equality delete makes a racing
+// Set safe: if the key was already replaced nothing is deleted and the replacement's own task handles the old node.
+func (e *Engine[K, V]) expireOnRead(n *node.Node[K, V]) {
+	if !e.table.DeleteNode(n) {
+		return
+	}
+	n.Retire()
+	e.Notify(e.enqueue(task[K, V]{kind: taskExpire, n: n}))
 }
 
 func (e *Engine[K, V]) recordAccess(n *node.Node[K, V]) {
@@ -276,7 +307,7 @@ func (e *Engine[K, V]) SetHashed(h uint64, k K, v V) Evictions[K, V] {
 func (e *Engine[K, V]) NewNode(h uint64, k K, v V) *Node[K, V] {
 	n := node.New(k, v, h, e.weigh(k, v))
 	if e.expiryMode != expireNever {
-		n.SetExpiresAt(e.expiresAt(k, v))
+		n.SetExpiresAt(e.expiresAt(e.now(), k, v))
 	}
 	return n
 }
@@ -288,7 +319,7 @@ func (e *Engine[K, V]) Insert(n *Node[K, V]) Evictions[K, V] {
 		return e.insertDirect(n)
 	}
 	if e.stats != nil {
-		e.stats.sets.Add(1)
+		e.stats.Add(statSets, 1)
 	}
 	old := e.table.Store(n)
 	if old == nil {
@@ -298,6 +329,34 @@ func (e *Engine[K, V]) Insert(n *Node[K, V]) Evictions[K, V] {
 	return e.enqueue(task[K, V]{kind: taskUpdate, n: n, old: old})
 }
 
+// Mapped returns the node k currently maps to, expired or not, or nil. For use with InsertIf.
+func (e *Engine[K, V]) Mapped(h uint64, k K) *Node[K, V] {
+	if e.direct {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+	}
+	return e.table.Get(h, k)
+}
+
+// InsertIf is Insert only if k still maps to exactly expected (nil meaning absent), as returned by Mapped, reporting
+// whether it inserted. A value computed from an earlier lookup therefore never overwrites a newer write.
+func (e *Engine[K, V]) InsertIf(expected, n *Node[K, V]) (Evictions[K, V], bool) {
+	if e.direct {
+		return e.insertDirectIf(expected, n)
+	}
+	if !e.table.StoreIf(expected, n) {
+		return nil, false
+	}
+	if e.stats != nil {
+		e.stats.Add(statSets, 1)
+	}
+	if expected == nil {
+		return e.enqueue(task[K, V]{kind: taskAdd, n: n}), true
+	}
+	expected.Retire()
+	return e.enqueue(task[K, V]{kind: taskUpdate, n: n, old: expected}), true
+}
+
 func (e *Engine[K, V]) weigh(k K, v V) uint32 {
 	if e.weigher == nil {
 		return 1
@@ -305,15 +364,15 @@ func (e *Engine[K, V]) weigh(k K, v V) uint32 {
 	return max(e.weigher(k, v), 1)
 }
 
-func (e *Engine[K, V]) expiresAt(k K, v V) int64 {
+func (e *Engine[K, V]) expiresAt(now int64, k K, v V) int64 {
 	if e.expiryMode != expireCustom {
-		return addSaturating(e.now(), e.ttl)
+		return addSaturating(now, e.ttl)
 	}
 	d := e.expireFn(k, v)
 	if d <= 0 {
 		return 0
 	}
-	return addSaturating(e.now(), int64(d))
+	return addSaturating(now, int64(d))
 }
 
 // addSaturating adds a non-negative duration to a monotonic instant, saturating rather than wrapping to a negative
@@ -380,8 +439,8 @@ func (e *Engine[K, V]) Stats() Stats {
 		s.Len, s.Weight, s.Evictions = e.table.Len(), e.policy.Weight(), e.evictions
 	}))
 	if e.stats != nil {
-		s.Hits, s.Misses, s.Sets = e.stats.hits.Value(), e.stats.misses.Value(), e.stats.sets.Value()
-		s.Loads, s.LoadErrors = e.stats.loads.Value(), e.stats.loadErrors.Value()
+		s.Hits, s.Misses, s.Sets = e.stats.Value(statHits), e.stats.Value(statMisses), e.stats.Value(statSets)
+		s.Loads, s.LoadErrors = e.stats.Value(statLoads), e.stats.Value(statLoadErrors)
 	}
 	return s
 }
@@ -391,21 +450,21 @@ func (e *Engine[K, V]) RecordLoad(failed bool) {
 	if e.stats == nil {
 		return
 	}
-	e.stats.loads.Add(1)
+	e.stats.Add(statLoads, 1)
 	if failed {
-		e.stats.loadErrors.Add(1)
+		e.stats.Add(statLoadErrors, 1)
 	}
 }
 
 func (e *Engine[K, V]) recordHit() {
 	if e.stats != nil {
-		e.stats.hits.Add(1)
+		e.stats.Add(statHits, 1)
 	}
 }
 
 func (e *Engine[K, V]) recordMiss() {
 	if e.stats != nil {
-		e.stats.misses.Add(1)
+		e.stats.Add(statMisses, 1)
 	}
 }
 
@@ -440,7 +499,7 @@ func (e *Engine[K, V]) locked(fn func()) Evictions[K, V] {
 	evs := e.takePending()
 	e.mu.Unlock()
 	if e.status.Load() == drainRequired {
-		evs = append(evs, e.tryDrain()...)
+		evs = evs.join(e.tryDrain())
 	}
 	return evs
 }
@@ -448,12 +507,20 @@ func (e *Engine[K, V]) locked(fn func()) Evictions[K, V] {
 func (e *Engine[K, V]) enqueue(t task[K, V]) Evictions[K, V] {
 	var evs Evictions[K, V]
 	for !e.writes.Enqueue(t) {
-		evs = append(evs, e.locked(nil)...)
+		evs = evs.join(e.locked(nil))
 	}
 	if e.status.Load() != drainRequired {
 		e.status.Store(drainRequired)
 	}
-	return append(evs, e.tryDrain()...)
+	return evs.join(e.tryDrain())
+}
+
+// join appends more, reusing more itself when evs is empty so the common single-batch case allocates nothing extra.
+func (evs Evictions[K, V]) join(more Evictions[K, V]) Evictions[K, V] {
+	if len(evs) == 0 {
+		return more
+	}
+	return append(evs, more...)
 }
 
 // requestDrain asks for maintenance on behalf of reads, unless it is already in progress. It only writes the status
@@ -470,19 +537,23 @@ func (e *Engine[K, V]) requestDrain() {
 }
 
 // tryDrain runs maintenance if the policy lock is free. If more work was requested while it held the lock it loops,
-// so a request is never stranded between a holder's last check and its unlock, for at most maxDrainRounds rounds;
-// callers that requested work after that drain it themselves.
+// so a request is never stranded between a holder's last check and its unlock, for at most maxDrainRounds rounds.
+// A request still pending after that, which needs sustained writes racing the holder, is handed to a goroutine so it
+// cannot be stranded until the next write: with a read-only workload afterwards nothing else would drain it.
 func (e *Engine[K, V]) tryDrain() Evictions[K, V] {
 	var evs Evictions[K, V]
-	for range maxDrainRounds {
+	for i := range maxDrainRounds {
 		if !e.mu.TryLock() {
-			break
+			return evs
 		}
 		e.maintenance()
-		evs = append(evs, e.takePending()...)
+		evs = evs.join(e.takePending())
 		e.mu.Unlock()
 		if e.status.Load() != drainRequired {
-			break
+			return evs
+		}
+		if i == maxDrainRounds-1 {
+			go e.Notify(e.locked(nil))
 		}
 	}
 	return evs
@@ -552,6 +623,12 @@ func (e *Engine[K, V]) apply(t task[K, V]) {
 		e.update(t.old, t.n)
 	case taskRemove:
 		e.remove(t.n)
+	case taskExpire:
+		e.remove(t.n)
+		e.evictions++
+		if e.onEviction != nil {
+			e.pending = append(e.pending, Evicted[K, V]{Key: t.n.Key, Value: t.n.Value, Cause: CauseExpired})
+		}
 	}
 }
 

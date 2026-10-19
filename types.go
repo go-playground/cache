@@ -33,7 +33,7 @@ type Stats struct {
 	// Capacity is the maximum total weight; with unweighted caches every entry weighs 1, so it is the maximum length.
 	Capacity uint64
 
-	// Len is the number of entries.
+	// Len is the number of entries, including any that have expired but not yet been reclaimed.
 	Len int
 
 	// Weight is the total weight of the entries.

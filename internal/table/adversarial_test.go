@@ -125,12 +125,14 @@ func advCheckInvariants[K comparable](t testing.TB, tbl *Table[K, int]) map[K]*n
 	}
 	byKey := make(map[K]*node.Node[K, int])
 	perStripe := make([]int64, len(s.stripes))
+	for j := range s.stripes {
+		if !s.stripes[j].mu.TryLock() {
+			t.Fatalf("stripe %d left locked", j)
+		}
+		s.stripes[j].mu.Unlock()
+	}
 	for j := range s.buckets {
 		root := &s.buckets[j]
-		if !root.mu.TryLock() {
-			t.Fatalf("root %d left locked", j)
-		}
-		root.mu.Unlock()
 		for b := root; b != nil; b = b.next.Load() {
 			meta := b.meta.Load()
 			if meta>>(slotsPerBucket*8) != 0 {
@@ -155,7 +157,7 @@ func advCheckInvariants[K comparable](t testing.TB, tbl *Table[K, int]) map[K]*n
 					t.Fatalf("key %v mapped twice", n.Key)
 				}
 				byKey[n.Key] = n
-				perStripe[n.Hash&s.stripeMask]++
+				perStripe[s.index(n.Hash)&s.stripeMask]++
 			}
 		}
 	}
@@ -424,7 +426,7 @@ func TestAdvCopyChainPlacesEveryNodeExactlyOnce(t *testing.T) {
 							feeders[uint64(j)] = map[uint64]bool{}
 						}
 						feeders[uint64(j)][src] = true
-						perStripe[n.Hash&ns.stripeMask]++
+						perStripe[ns.index(n.Hash)&ns.stripeMask]++
 					}
 					if next := b.next.Load(); next != nil && filled != slotsPerBucket {
 						t.Fatalf("%d->%d root %d: non-final bucket holds %d nodes", oldN, newN, j, filled)
@@ -531,9 +533,12 @@ func TestAdvRangeReductionAtScale(t *testing.T) {
 		}
 	}
 
+	// Growth steps near the maximum, derived from maxB so they stay valid whatever the bucket geometry. A doubling
+	// step from n must start at ceil(n/2) so that newN <= 2*oldN holds for odd n.
+	half := func(n uint64) uint64 { return (n + 1) / 2 }
 	steps := [][2]uint64{
-		{maxB / 2, maxB}, {(maxB + 1) / 2, maxB}, {maxB - 1, maxB}, {1 << 28, maxB},
-		{1 << 27, 1 << 28}, {1<<28 - 3, 1<<28 + 5},
+		{half(maxB), maxB}, {half(maxB) + 1, maxB}, {maxB - 1, maxB}, {maxB*2/3 + 1, maxB},
+		{half(half(maxB)), half(maxB)}, {half(maxB) - 3, half(maxB) + 5},
 	}
 	for _, st := range steps {
 		oldN, newN := st[0], st[1]

@@ -426,3 +426,39 @@ func TestScanCyclesThroughEveryNode(t *testing.T) {
 		}
 	}
 }
+
+// TestChurnDoesNotGrowChains checks overflow buckets are freed once empty, so a table under sustained churn keeps the
+// chain lengths of a freshly filled one instead of its peak lengths.
+func TestChurnDoesNotGrowChains(t *testing.T) {
+	const capacity = 20_000
+	tbl := NewBounded[int, int](capacity, capacity)
+	hash := func(k int) uint64 { return uint64(k)*0x9E3779B97F4A7C15 + 3 }
+	for k := range capacity {
+		tbl.Store(node.New(k, k, hash(k), 1))
+	}
+	filled := countBuckets(tbl)
+	for k := capacity; k < 20*capacity; k++ {
+		tbl.Delete(hash(k-capacity), k-capacity)
+		tbl.Store(node.New(k, k, hash(k), 1))
+	}
+	churned := countBuckets(tbl)
+	if churned > filled*105/100 {
+		t.Fatalf("buckets grew from %d to %d under churn", filled, churned)
+	}
+	for k := 19 * capacity; k < 20*capacity; k++ {
+		if n := tbl.Get(hash(k), k); n == nil || n.Value != k {
+			t.Fatalf("key %d lost", k)
+		}
+	}
+}
+
+func countBuckets[K comparable, V any](t *Table[K, V]) int {
+	s := t.cur.Load()
+	n := 0
+	for i := range s.buckets {
+		for b := &s.buckets[i]; b != nil; b = b.next.Load() {
+			n++
+		}
+	}
+	return n
+}

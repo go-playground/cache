@@ -170,10 +170,14 @@ func (p *Policy[K, V]) evictSmall(evict policy.EvictFunc[K, V]) bool {
 }
 
 // evictMain reinserts nodes with a non-zero frequency at the front of main, decrementing it, until it evicts one.
+//
+// Concurrent InlineAccess calls raise frequencies while this runs, so under sustained reads of every main node the
+// loop might never find a zero. The budget is the most decrements a quiescent main could need, so it never changes
+// behaviour without concurrent reads; once spent, the back node is evicted regardless of its frequency.
 func (p *Policy[K, V]) evictMain(evict policy.EvictFunc[K, V]) {
-	for {
+	for budget := maxFreq * p.main.Len(); ; budget-- {
 		t := p.main.Back()
-		if f := t.Meta.Load(); f > 0 {
+		if f := t.Meta.Load(); f > 0 && budget > 0 {
 			t.Meta.Store(f - 1)
 			p.main.MoveToFront(t)
 			continue

@@ -15,8 +15,11 @@
 //   - With more, reads are lock-free and eviction bookkeeping is buffered and applied in batches by whichever caller
 //     acquires the lock, so cores rarely contend.
 //
-// Both engines behave identically. The choice is made once per cache: if GOMAXPROCS changes afterwards, existing
-// caches keep their engine.
+// Both engines offer the same API and guarantees: an expired entry is never returned, capacity is enforced, and every
+// operation is safe for concurrent use. They differ in timing: with more than one processor, eviction bookkeeping is
+// applied a little after the operation that caused it, so recency and frequency are approximate and the cache may
+// briefly hold a few entries over capacity until its buffers drain. The choice is made once per cache: if
+// GOMAXPROCS changes afterwards, existing caches keep their engine.
 package cache
 
 import (

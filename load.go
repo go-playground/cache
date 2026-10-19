@@ -63,16 +63,17 @@ func (c *Cache[K, V]) GetOrLoad(ctx context.Context, key K, load Loader[K, V]) r
 	}
 }
 
-type call[V any] struct {
+type call[K comparable, V any] struct {
 	done           chan struct{}
 	res            resultext.Result[V, error]
+	expected       *core.Node[K, V]
 	leaderCanceled bool
 	invalidated    bool
 }
 
 type loadShard[K comparable, V any] struct {
 	mu    sync.Mutex
-	calls map[K]*call[V]
+	calls map[K]*call[K, V]
 	_     [xruntime.CacheLine]byte
 }
 
@@ -89,7 +90,7 @@ func newInflight[K comparable, V any]() *inflight[K, V] {
 	}
 	f := &inflight[K, V]{shards: make([]loadShard[K, V], n), mask: n - 1}
 	for i := range f.shards {
-		f.shards[i].calls = make(map[K]*call[V])
+		f.shards[i].calls = make(map[K]*call[K, V])
 	}
 	return f
 }
@@ -106,7 +107,7 @@ func (f *inflight[K, V]) do(ctx context.Context, e *core.Engine[K, V], h uint64,
 		s.mu.Unlock()
 		return wait(ctx, existing)
 	}
-	cl := &call[V]{done: make(chan struct{})}
+	cl := &call[K, V]{done: make(chan struct{})}
 	s.calls[key] = cl
 	f.active.Add(1)
 	s.mu.Unlock()
@@ -114,14 +115,17 @@ func (f *inflight[K, V]) do(ctx context.Context, e *core.Engine[K, V], h uint64,
 	// A previous leader may have stored the value between our miss and registering this call.
 	if v := e.PeekHashed(h, key); v.IsSome() {
 		cl.res = resultext.Ok[V, error](v.Unwrap())
-		f.release(e, s, key, cl, nil)
+		f.release(e, s, key, cl, nil, nil)
 		return cl.res, false
 	}
+	// Whatever the key maps to now, nil or an expired entry, is what the loaded value may replace: a write that lands
+	// during the load changes the mapping, and release then leaves it alone.
+	cl.expected = e.Mapped(h, key)
 	f.lead(ctx, e, s, h, key, cl, load)
 	return cl.res, false
 }
 
-func wait[V any](ctx context.Context, cl *call[V]) (resultext.Result[V, error], bool) {
+func wait[K comparable, V any](ctx context.Context, cl *call[K, V]) (resultext.Result[V, error], bool) {
 	select {
 	case <-cl.done:
 		if cl.leaderCanceled && ctx.Err() == nil {
@@ -134,7 +138,7 @@ func wait[V any](ctx context.Context, cl *call[V]) (resultext.Result[V, error], 
 }
 
 // lead runs the loader, distinguishing a normal return, a panic and runtime.Goexit so waiters are always released.
-func (f *inflight[K, V]) lead(ctx context.Context, e *core.Engine[K, V], s *loadShard[K, V], h uint64, key K, cl *call[V], load Loader[K, V]) {
+func (f *inflight[K, V]) lead(ctx context.Context, e *core.Engine[K, V], s *loadShard[K, V], h uint64, key K, cl *call[K, V], load Loader[K, V]) {
 	var (
 		n                *core.Node[K, V]
 		normal, panicked bool
@@ -147,11 +151,11 @@ func (f *inflight[K, V]) lead(ctx context.Context, e *core.Engine[K, V], s *load
 			return
 		case panicked:
 			cl.res = resultext.Err[V, error](&LoadPanicError{Value: panicVal, Stack: stack})
-			f.release(e, s, key, cl, nil)
+			f.release(e, s, key, cl, nil, load)
 			panic(panicVal)
 		default:
 			cl.res = resultext.Err[V](ErrLoaderExited)
-			f.release(e, s, key, cl, nil)
+			f.release(e, s, key, cl, nil, load)
 		}
 	}()
 	func() {
@@ -164,6 +168,8 @@ func (f *inflight[K, V]) lead(ctx context.Context, e *core.Engine[K, V], s *load
 			}
 		}()
 		cl.res = load(ctx, key)
+		// ctx.Err is user code too (custom contexts), so it stays inside the guard: a panic here must still release.
+		cl.leaderCanceled = cl.res.IsErr() && ctx.Err() != nil
 		if cl.res.IsOk() {
 			// Runs the user's weigher and expiry function, so it must happen before taking the shard lock.
 			n = e.NewNode(h, key, cl.res.Unwrap())
@@ -173,23 +179,26 @@ func (f *inflight[K, V]) lead(ctx context.Context, e *core.Engine[K, V], s *load
 	if !normal {
 		return
 	}
-	cl.leaderCanceled = cl.res.IsErr() && ctx.Err() != nil
-	f.release(e, s, key, cl, n)
+	f.release(e, s, key, cl, n, load)
 }
 
-// release stores n unless the call was invalidated, then wakes waiters.
+// release stores n unless the call was invalidated or the key's mapping changed, then wakes waiters. loaded is nil
+// when the loader did not run.
 //
-// Set, Remove and Clear invalidate under the shard lock before writing the table, and the store happens under the
-// shard lock before active is decremented, so either the invalidation prevents the store or the later table write
-// supersedes it: a stale load never overwrites a newer write or resurrects a removed key.
-func (f *inflight[K, V]) release(e *core.Engine[K, V], s *loadShard[K, V], key K, cl *call[V], n *core.Node[K, V]) {
-	e.RecordLoad(cl.res.IsErr())
+// Two guards keep a stale load from overwriting a newer write or resurrecting a removed key. Set, Remove and Clear
+// invalidate under the shard lock before writing the table, covering writes that saw the call registered. A write
+// that ran its invalidation just before the call was registered is caught by InsertIf: the store only happens if the
+// key still maps to what it did before the load began.
+func (f *inflight[K, V]) release(e *core.Engine[K, V], s *loadShard[K, V], key K, cl *call[K, V], n *core.Node[K, V], loaded Loader[K, V]) {
+	if loaded != nil {
+		e.RecordLoad(cl.res.IsErr())
+	}
 	var evs core.Evictions[K, V]
 	func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		if n != nil && !cl.invalidated {
-			evs = e.Insert(n)
+			evs, _ = e.InsertIf(cl.expected, n)
 		}
 		delete(s.calls, key)
 	}()

@@ -645,3 +645,37 @@ func TestSweepOfEntryNotYetInPolicy(t *testing.T) {
 	}
 	checkInvariants(t, e)
 }
+
+// TestExpiredEntryIsReclaimedByTheReadThatFindsIt checks a read of an expired key frees it at once, in both engines,
+// with a CauseExpired notification, rather than leaving it for the sweep.
+func TestExpiredEntryIsReclaimedByTheReadThatFindsIt(t *testing.T) {
+	for _, p := range policies() {
+		t.Run(p.name, func(t *testing.T) {
+			var expired []int
+			e, clk := newEngine(t, p, 100, func(c *Config[int, int]) {
+				c.ExpireAfterWrite(time.Second)
+				c.OnEviction(func(k, _ int, cause Cause) {
+					if cause == CauseExpired {
+						expired = append(expired, k)
+					}
+				})
+			})
+			for k := range 10 {
+				e.Set(k, k)
+			}
+			e.Drain()
+			clk.Advance(2 * time.Second)
+			if e.Get(3).IsSome() {
+				t.Fatal("expired entry returned")
+			}
+			e.Drain()
+			if e.table.Get(e.Hash(3), 3) != nil {
+				t.Fatal("expired entry still mapped after the read that found it")
+			}
+			if !slices.Contains(expired, 3) {
+				t.Fatalf("no CauseExpired notification for the read-reclaimed entry, got %v", expired)
+			}
+			checkInvariants(t, e)
+		})
+	}
+}

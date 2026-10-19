@@ -4,6 +4,7 @@ import (
 	"math"
 	"math/bits"
 	"runtime"
+	"sync"
 	"sync/atomic"
 
 	"github.com/go-playground/cache/v2/internal/node"
@@ -21,10 +22,12 @@ const (
 // MaxEntries is the most entries a table is sized for; beyond it buckets overflow into ever longer chains.
 const MaxEntries = 1 << 30
 
-// stripe is one cache-line padded slice of the size counter.
+// stripe guards the chains of the roots mapped to it and holds their share of the size counter, padded to a cache
+// line. Striping the locks by root keeps them off the buckets, which readers share, and lets a bucket hold six slots.
 type stripe struct {
-	n atomic.Int64
-	_ [xruntime.CacheLine - 8]byte
+	mu sync.Mutex
+	n  atomic.Int64
+	_  [xruntime.CacheLine - 16]byte
 }
 
 // state is one generation of the table. It is resized at most once: frozen is set by its single resizer and resized
@@ -75,9 +78,9 @@ func (s *state[K, V]) root(hash uint64) *bucket[K, V] {
 	return &s.buckets[s.index(hash)]
 }
 
-// stripeFor returns the counter stripe of hash.
+// stripeFor returns the stripe of hash, chosen by root so that every chain has exactly one lock and one counter.
 func (s *state[K, V]) stripeFor(hash uint64) *stripe {
-	return &s.stripes[hash&s.stripeMask]
+	return &s.stripes[s.index(hash)&s.stripeMask]
 }
 
 // size sums the stripes. A node's increment and decrement always land on the same stripe of the same state, so no
@@ -90,7 +93,8 @@ func (s *state[K, V]) size() int64 {
 	return sum
 }
 
-// store maps n.Key to n in the chain of root, which must be locked. It reports whether an overflow bucket was added.
+// store maps n.Key to n in the chain of root, whose stripe must be locked. It reports whether an overflow bucket was
+// added.
 func (s *state[K, V]) store(root *bucket[K, V], n *node.Node[K, V]) (old *node.Node[K, V], overflowed bool) {
 	tag := tagOf(n.Hash)
 	var free, last *bucket[K, V]
@@ -117,12 +121,25 @@ func (s *state[K, V]) store(root *bucket[K, V], n *node.Node[K, V]) (old *node.N
 	return nil, true
 }
 
-// delete removes key from the chain of root, which must be locked.
-func (s *state[K, V]) delete(root *bucket[K, V], hash uint64, key K) *node.Node[K, V] {
+// lookup returns the node mapped to key in the chain of root, or nil.
+func (s *state[K, V]) lookup(root *bucket[K, V], hash uint64, key K) *node.Node[K, V] {
 	tag := tagOf(hash)
 	for b := root; b != nil; b = b.next.Load() {
+		if _, e := b.find(b.meta.Load(), tag, hash, key); e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
+// delete removes key from the chain of root, whose stripe must be locked.
+func (s *state[K, V]) delete(root *bucket[K, V], hash uint64, key K) *node.Node[K, V] {
+	tag := tagOf(hash)
+	var prev *bucket[K, V]
+	for b := root; b != nil; prev, b = b, b.next.Load() {
 		if i, e := b.find(b.meta.Load(), tag, hash, key); e != nil {
 			b.clear(i)
+			unlinkIfEmpty(prev, b)
 			s.stripeFor(hash).n.Add(-1)
 			return e
 		}
@@ -130,17 +147,29 @@ func (s *state[K, V]) delete(root *bucket[K, V], hash uint64, key K) *node.Node[
 	return nil
 }
 
-// deleteNode removes exactly n from the chain of root, which must be locked.
+// deleteNode removes exactly n from the chain of root, whose stripe must be locked.
 func (s *state[K, V]) deleteNode(root *bucket[K, V], n *node.Node[K, V]) bool {
 	tag := tagOf(n.Hash)
-	for b := root; b != nil; b = b.next.Load() {
+	var prev *bucket[K, V]
+	for b := root; b != nil; prev, b = b, b.next.Load() {
 		if i := b.findNode(b.meta.Load(), tag, n); i >= 0 {
 			b.clear(i)
+			unlinkIfEmpty(prev, b)
 			s.stripeFor(n.Hash).n.Add(-1)
 			return true
 		}
 	}
 	return false
+}
+
+// unlinkIfEmpty unlinks b, an overflow bucket following prev, once it holds nothing, so chains shrink back after
+// churn instead of staying at their peak length. Requires the chain's lock. b.next is left intact so a reader standing
+// on b still reaches the rest of the chain, and b is never reused, so that reader can never see foreign entries.
+func unlinkIfEmpty[K comparable, V any](prev, b *bucket[K, V]) {
+	if prev == nil || b.meta.Load() != 0 {
+		return
+	}
+	prev.next.Store(b.next.Load())
 }
 
 // copyChain copies the nodes of locked root i of the previous state, which had oldN roots, into s, which is not yet

@@ -26,8 +26,8 @@ type Builder[K comparable, V any] struct {
 // treated as cache.MaxEntries.
 //
 // Building the cache reserves its index up front, about 17 bytes per entry of capacity (e.g. 1.7MB for 100k entries,
-// 17MB for 1M), so it never resizes. Entries themselves are allocated as they are stored, costing their key and value
-// plus 48 bytes each.
+// 17MB for 1M), so it never resizes; capacities above 1M entries reserve 1M and grow towards their bound as they
+// fill. Entries themselves are allocated as they are stored, costing their key and value plus 48 bytes each.
 func New[K comparable, V any](capacity uint64) *Builder[K, V] {
 	return NewWeighted[K, V](capacity, nil)
 }

@@ -15,8 +15,9 @@ const inPolicyBit = 1 << 31
 
 // Node is a single cache entry.
 //
-// Key, Value, Hash and Weight are immutable once the node is published to the table. Updates to a key publish a new
-// node and retire the old one, so readers never race on the value.
+// Key, Hash and Weight are immutable once the node is published to the table. In the concurrent engine Value is too:
+// updates publish a new node and retire the old one, so lock-free readers never race on it. The direct engine updates
+// Value in place, which is safe because all of its reads and writes hold the engine's mutex.
 type Node[K comparable, V any] struct {
 	Key   K
 	Value V

@@ -20,6 +20,8 @@ type climber struct {
 	misses      uint64
 }
 
+// newClimber returns a climber stepping by a fraction of capacity, which may be a weight, and sampling by entries:
+// capacity in entries for unweighted caches, or the current entry count for weighted ones, see resample.
 func newClimber(capacity uint64) climber {
 	c := climber{
 		sampleSize:  sampleSize(capacity),
@@ -29,13 +31,19 @@ func newClimber(capacity uint64) climber {
 	return c
 }
 
-// sampleSize returns 10*capacity (saturating, at least 1), as Caffeine does. Smaller samples make large caches adapt
+// sampleSize returns 10*entries (saturating, at least 1), as Caffeine does. Smaller samples make large caches adapt
 // to noise: on the DS1 trace a 1<<20 cap cost a 4M-entry cache 7 points of hit ratio.
-func sampleSize(capacity uint64) uint64 {
-	if capacity > math.MaxUint64/10 {
+func sampleSize(entries uint64) uint64 {
+	if entries > math.MaxUint64/10 {
 		return math.MaxUint64
 	}
-	return max(1, 10*capacity)
+	return max(1, 10*entries)
+}
+
+// resample sets the sample size from the number of entries the cache holds. A weighted cache's capacity is a total
+// weight, so sampling 10x that would mean the climber never adapts; sampling by entries keeps the period meaningful.
+func (c *climber) resample(entries uint64) {
+	c.sampleSize = sampleSize(entries)
 }
 
 func (c *climber) reset() {

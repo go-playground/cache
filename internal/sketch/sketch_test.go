@@ -111,8 +111,8 @@ func TestEnsureCapacity(t *testing.T) {
 	if s.Capacity() != 128 {
 		t.Errorf("Capacity = %d, want 128", s.Capacity())
 	}
-	if s.Frequency(7) != 0 || s.size != 0 {
-		t.Errorf("grown sketch kept counts: frequency %d, size %d", s.Frequency(7), s.size)
+	if s.Frequency(7) != 1 || s.size != 1 {
+		t.Errorf("grown sketch lost counts: frequency %d, size %d", s.Frequency(7), s.size)
 	}
 	if s.sampleSize != 1000 {
 		t.Errorf("sampleSize = %d, want 1000", s.sampleSize)
@@ -208,4 +208,53 @@ func sizeName(size int) string {
 		return "1M"
 	}
 	return "1K"
+}
+
+// TestEnsureCapacityIsANoOpWhenSatisfied guards against comparing words with entries: a satisfied EnsureCapacity must
+// keep every count. Capacity 1024 is exactly the case that used to wipe the sketch on every miss.
+func TestEnsureCapacityIsANoOpWhenSatisfied(t *testing.T) {
+	s := New(1024)
+	s.Increment(7)
+	words := len(s.table)
+	allocs := testing.AllocsPerRun(10, func() {
+		s.EnsureCapacity(s.Capacity())
+		s.EnsureCapacity(1)
+	})
+	if allocs != 0 || len(s.table) != words || s.Frequency(7) != 1 {
+		t.Fatalf("satisfied EnsureCapacity touched the sketch: allocs %v, words %d -> %d, freq %d", allocs, words, len(s.table), s.Frequency(7))
+	}
+}
+
+// TestEnsureCapacityKeepsEstimatesWhenGrowing checks growth duplicates the table so every key's estimate survives.
+func TestEnsureCapacityKeepsEstimatesWhenGrowing(t *testing.T) {
+	s := New(64)
+	hashes := make([]uint64, 200)
+	for i := range hashes {
+		hashes[i] = uint64(i)*0x9E3779B97F4A7C15 + 11
+		for range i%5 + 1 {
+			s.Increment(hashes[i])
+		}
+	}
+	before := make([]uint8, len(hashes))
+	for i, h := range hashes {
+		before[i] = s.Frequency(h)
+	}
+	size := s.size
+	s.EnsureCapacity(4096)
+	if s.Capacity() < 4096 || s.size != size {
+		t.Fatalf("capacity %d size %d (was %d)", s.Capacity(), s.size, size)
+	}
+	for i, h := range hashes {
+		if got := s.Frequency(h); got != before[i] {
+			t.Fatalf("hash %d: frequency %d after growth, was %d", i, got, before[i])
+		}
+	}
+}
+
+func TestCapacityCoversRequestedCapacity(t *testing.T) {
+	for _, c := range []int{1, 15, 16, 17, 1023, 1024, 1025, 100_000} {
+		if s := New(c); s.Capacity() < c {
+			t.Fatalf("New(%d).Capacity() = %d", c, s.Capacity())
+		}
+	}
 }

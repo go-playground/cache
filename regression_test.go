@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -109,8 +110,8 @@ func TestHugeTTLNeverWrapsToExpired(t *testing.T) {
 	}
 }
 
-// TestCapacityReservesTheIndexUpFront pins the documented cost of New: about 17 bytes of index per entry of
-// capacity, allocated when the cache is built so it never grows.
+// TestCapacityReservesTheIndexUpFront pins the documented cost of New: about 14 bytes of index per entry of
+// capacity (64-byte buckets of 6 slots at a 0.75 load factor), allocated when the cache is built so it never grows.
 func TestCapacityReservesTheIndexUpFront(t *testing.T) {
 	var before, after runtime.MemStats
 	runtime.GC()
@@ -118,8 +119,8 @@ func TestCapacityReservesTheIndexUpFront(t *testing.T) {
 	c := lru.New[int, int](1_000_000).Build()
 	runtime.ReadMemStats(&after)
 	grew := after.TotalAlloc - before.TotalAlloc
-	if grew < 16<<20 || grew > 20<<20 {
-		t.Fatalf("building a 1M entry cache allocated %d bytes, want ~17MB of index", grew)
+	if grew < 13<<20 || grew > 16<<20 {
+		t.Fatalf("building a 1M entry cache allocated %d bytes, want ~14MB of index", grew)
 	}
 	c.Set(1, 1)
 }
@@ -172,4 +173,97 @@ func TestZeroValueBuilderPanicsWithGuidance(t *testing.T) {
 	}()
 	var b tinylfu.Builder[string, int]
 	b.Build()
+}
+
+// A Set that ran its invalidation before the load registered, and finishes while the load is in flight, must win:
+// the loaded value is stale. The weigher parks the Set in exactly that window.
+func TestSetThatStartedBeforeLoadIsNotOverwrittenByStaleLoad(t *testing.T) {
+	inWeigher, releaseSet := make(chan struct{}), make(chan struct{})
+	c := lru.NewWeighted[string, int](100, func(_ string, v int) uint32 {
+		if v == 2 {
+			close(inWeigher)
+			<-releaseSet
+		}
+		return 1
+	}).Build()
+	// Ensure the in-flight tracker exists, so the Set's invalidation runs the full path and finds nothing registered.
+	c.GetOrLoad(context.Background(), "warm", func(context.Context, string) resultext.Result[int, error] { return ok(0) })
+
+	setDone := make(chan struct{})
+	go func() { c.Set("k", 2); close(setDone) }()
+	<-inWeigher // the Set has run its invalidation, found no load, and is about to write
+
+	loading, releaseLoad, loadDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	go func() {
+		c.GetOrLoad(context.Background(), "k", func(context.Context, string) resultext.Result[int, error] {
+			close(loading)
+			<-releaseLoad
+			return ok(1)
+		})
+		close(loadDone)
+	}()
+	<-loading
+	close(releaseSet)
+	<-setDone // Set("k", 2) returned while the load was in flight
+	close(releaseLoad)
+	<-loadDone
+	if v := c.Get("k"); v.IsNone() || v.Unwrap() != 2 {
+		t.Fatalf("stale load overwrote a Set that completed during it: got %v, want 2", v)
+	}
+}
+
+type panickingErrCtx struct{ context.Context }
+
+func (panickingErrCtx) Err() error { panic("custom context") }
+
+// A panic inside a user context's Err must not leave the key's load registered forever.
+func TestPanicInContextErrReleasesTheKey(t *testing.T) {
+	c := newLoadCache()
+	func() {
+		defer func() { _ = recover() }()
+		c.GetOrLoad(panickingErrCtx{context.Background()}, "k", func(context.Context, string) resultext.Result[int, error] {
+			return resultext.Err[int](errBoom)
+		})
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	res := c.GetOrLoad(ctx, "k", func(context.Context, string) resultext.Result[int, error] { return ok(7) })
+	if res.IsErr() || res.Unwrap() != 7 {
+		t.Fatalf("key wedged after a panicking ctx.Err: %v", res)
+	}
+}
+
+func TestStatsLoadsCountsOnlyLoaderCalls(t *testing.T) {
+	c := newLoadCache()
+	var calls atomic.Int64
+	release := make(chan struct{})
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Go(func() {
+			c.GetOrLoad(context.Background(), "k", func(context.Context, string) resultext.Result[int, error] {
+				calls.Add(1)
+				<-release
+				return ok(1)
+			})
+		})
+	}
+	time.Sleep(20 * time.Millisecond)
+	close(release)
+	wg.Wait()
+	if loads := c.Stats().Loads; loads != uint64(calls.Load()) {
+		t.Fatalf("Stats.Loads = %d, loader ran %d times", loads, calls.Load())
+	}
+}
+
+// A capacity meant as "practically unbounded" must not reserve gigabytes at build; the index grows towards it.
+func TestHugeCapacityReservesABoundedIndex(t *testing.T) {
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	c := lru.New[int, int](cache.MaxEntries).Build()
+	runtime.ReadMemStats(&after)
+	if grew := after.TotalAlloc - before.TotalAlloc; grew > 64<<20 {
+		t.Fatalf("building allocated %d bytes up front", grew)
+	}
+	c.Set(1, 1)
 }

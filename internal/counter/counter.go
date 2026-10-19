@@ -41,3 +41,40 @@ func (c *Counter) Value() uint64 {
 	}
 	return sum
 }
+
+// Width is how many counters a Set holds per stripe: as many 8-byte counters as fit in one cache line.
+const Width = xruntime.CacheLine / 8
+
+type setStripe struct {
+	v [Width]atomic.Uint64
+}
+
+// Set is up to Width related counters sharing one cache line per processor, so a cache recording several statistics
+// costs one line per processor rather than one per statistic.
+type Set struct {
+	stripes []setStripe
+	mask    uint32
+}
+
+// NewSet creates a Set with nextPow2(GOMAXPROCS) stripes.
+func NewSet() *Set {
+	n := uint32(1)
+	for n < uint32(runtime.GOMAXPROCS(0)) {
+		n <<= 1
+	}
+	return &Set{stripes: make([]setStripe, n), mask: n - 1}
+}
+
+// Add adds delta to counter i.
+func (s *Set) Add(i int, delta uint64) {
+	s.stripes[uint32(xruntime.Pid())&s.mask].v[i].Add(delta)
+}
+
+// Value returns the sum of counter i over all stripes.
+func (s *Set) Value(i int) uint64 {
+	var sum uint64
+	for j := range s.stripes {
+		sum += s.stripes[j].v[i].Load()
+	}
+	return sum
+}

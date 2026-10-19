@@ -5,6 +5,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-playground/cache/v2/internal/deque"
 	"github.com/go-playground/cache/v2/internal/node"
@@ -456,4 +457,53 @@ func BenchmarkInlineAccessParallelHot(b *testing.B) {
 			p.InlineAccess(n)
 		}
 	})
+}
+
+// TestEvictMainTerminatesUnderConcurrentReads checks Add cannot spin forever when readers keep raising main
+// frequencies faster than eviction lowers them.
+func TestEvictMainTerminatesUnderConcurrentReads(t *testing.T) {
+	const capacity = 100
+	p := New[int, int](capacity)
+	var r recorder
+	var mainNodes []*node.Node[int, int]
+	for k := range capacity - 1 {
+		n := mk(k, 1)
+		mainNodes = append(mainNodes, n)
+		p.Add(n, r.evict)
+		p.Access(n)
+		p.Access(n)
+	}
+	// Churn small so every node above is promoted into main, then refill small to its share.
+	for k := capacity; k < capacity*3; k++ {
+		p.Add(mk(k, 1), r.evict)
+	}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() {
+			for i := 0; ; i++ {
+				select {
+				case <-stop:
+					return
+				default:
+					p.InlineAccess(mainNodes[i%len(mainNodes)])
+				}
+			}
+		})
+	}
+	done := make(chan struct{})
+	go func() {
+		for k := capacity * 3; k < capacity*3+200; k++ {
+			p.Add(mk(k, 1), r.evict)
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Add spun on evictMain while readers kept frequencies up")
+	}
+	close(stop)
+	wg.Wait()
+	checkInvariants(t, p)
 }

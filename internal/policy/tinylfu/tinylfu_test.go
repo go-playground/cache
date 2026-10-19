@@ -460,3 +460,43 @@ func TestRandomOperationsKeepInvariants(t *testing.T) {
 		}
 	}
 }
+
+// TestSteadyStateMissesDoNotResetTheSketch checks the sketch is not reallocated once the cache is full, for the
+// power-of-two capacities that once wiped it on every miss and dropped TinyLFU to LRU.
+func TestSteadyStateMissesDoNotResetTheSketch(t *testing.T) {
+	for _, capacity := range []uint64{16, 1024, 4096} {
+		p := New[int, int](capacity, false)
+		evict := func(*testNode) {}
+		for k := range int(capacity) {
+			p.Add(newNode(k, 1), evict)
+		}
+		hot := newNode(-1, 1)
+		p.Add(hot, evict)
+		for range 10 {
+			p.Access(hot)
+		}
+		k := int(capacity) + 1
+		allocs := testing.AllocsPerRun(100, func() {
+			p.Add(newNode(k, 1), evict)
+			k++
+		})
+		if allocs > 1 { // the node itself
+			t.Fatalf("capacity %d: steady-state Add allocated %v times", capacity, allocs)
+		}
+		if f := p.sketch.Frequency(hot.Hash); f < 5 {
+			t.Fatalf("capacity %d: hot entry's frequency was lost, got %d", capacity, f)
+		}
+	}
+}
+
+// TestPowerOfTwoCapacityKeepsHitRatio checks TinyLFU beats LRU on a Zipf trace at a power-of-two capacity, where
+// a sketch reset per miss would make it behave like LRU.
+func TestPowerOfTwoCapacityKeepsHitRatio(t *testing.T) {
+	const capacity = 1024
+	trace := zipfTrace(1, 1.01, 50_000, 300_000)
+	tiny := simulate(t, New[int, int](capacity, false), trace, false)
+	lru := lruHitRatio(capacity, trace)
+	if tiny < lru*1.1 {
+		t.Fatalf("tinylfu %.4f vs lru %.4f at capacity %d", tiny, lru, capacity)
+	}
+}

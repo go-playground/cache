@@ -26,7 +26,7 @@ type Sketch struct {
 // New returns a sketch sized for capacity distinct entries.
 func New(capacity int) *Sketch {
 	s := &Sketch{}
-	s.alloc(capacity)
+	s.alloc(clamp(capacity))
 	return s
 }
 
@@ -62,13 +62,22 @@ func (s *Sketch) Frequency(hash uint64) uint8 {
 	return uint8(f)
 }
 
-// EnsureCapacity grows the sketch to fit capacity distinct entries, discarding all counts. It is a no-op if the
+// EnsureCapacity grows the sketch to fit capacity distinct entries, keeping every estimate. It is a no-op if the
 // sketch is already large enough.
+//
+// Growth duplicates the table: a key's block is chosen by hash & blockMask and its counters' positions within the
+// block do not depend on the size, so after doubling the key lands in either the original block or its copy, both of
+// which hold its counters. Estimates survive exactly and warm-up loses nothing.
 func (s *Sketch) EnsureCapacity(capacity int) {
-	if len(s.table) >= clamp(capacity) {
+	c := clamp(capacity)
+	if s.Capacity() >= c {
 		return
 	}
-	s.alloc(capacity)
+	old := s.table
+	s.alloc(c)
+	for i := 0; i < len(s.table); i += len(old) {
+		copy(s.table[i:], old)
+	}
 }
 
 // Reset zeroes every counter.
@@ -87,7 +96,6 @@ func (s *Sketch) alloc(capacity int) {
 	s.table = make([]uint64, words(c))
 	s.blockMask = uint64(len(s.table)>>3) - 1
 	s.sampleSize = max(10, 10*c)
-	s.size = 0
 }
 
 // age halves every counter, correcting size for the truncated odd counters.
@@ -121,9 +129,10 @@ func clamp(capacity int) int {
 // starts losing 1-2 points on skewed workloads.
 const entriesPerWord = 2
 
-// words returns the table length for capacity: the next power of two of capacity/entriesPerWord, at least one block.
+// words returns the table length for capacity: the next power of two of ceil(capacity/entriesPerWord), at least one
+// block, so Capacity() is never below capacity.
 func words(capacity int) int {
-	c := clamp(capacity) / entriesPerWord
+	c := (clamp(capacity) + entriesPerWord - 1) / entriesPerWord
 	if c <= 8 {
 		return 8
 	}

@@ -80,7 +80,7 @@ buffer, so a small fraction may not update recency or frequency.
 
 | Option | Default | Notes |
 |---|---|---|
-| `New(capacity)` | required | Maximum entries. `0` retains nothing; above `cache.MaxEntries` (~1.07 billion) it is clamped to that. Reserves the index up front, ~17 bytes per entry of capacity (1.7MB for 100k entries), so it never resizes. |
+| `New(capacity)` | required | Maximum entries. `0` retains nothing; above `cache.MaxEntries` (~1.07 billion) it is clamped to that. Reserves the index up front, ~17 bytes per entry of capacity (1.7MB for 100k entries), so it never resizes; capacities above 1M entries reserve 1M and grow towards their bound as they fill. |
 | `NewWeighted(capacity, weigher)` | — | Maximum total weight. `nil` weigher weighs every entry 1. Entries heavier than capacity are never retained. The entry count is unknown up front, so the index grows as entries are stored. |
 | `ExpireAfterWrite(d)` | no expiry | `d <= 0` disables. |
 | `ExpireAfterAccess(d)` | no expiry | Reads extend the expiry (with 1ms granularity). `d <= 0` disables. |
@@ -92,8 +92,8 @@ buffer, so a small fraction may not update recency or frequency.
 
 The expiry options replace one another; the last one set wins. Expired entries are never returned. Their memory is
 reclaimed by an incremental sweep that runs alongside normal operations, or by regular eviction, rather than at the
-exact moment they expire, so an expiry costs only 8 bytes per entry and the cache never holds more than its capacity.
-`OnEviction` reports `CauseExpired` when the sweep reclaims an entry.
+exact moment they expire, so an expiry costs only 8 bytes per entry; until reclaimed they still count towards
+capacity and `Stats().Len`. `OnEviction` reports `CauseExpired` when the sweep reclaims an entry.
 
 ## Benchmarks
 
@@ -192,8 +192,9 @@ Bytes per entry for int→int caches, the same at every core count:
 | v2 tinylfu | 91 | 89 | 88 | 95 |
 | v1 lru / lfu | 78 | 72 | 86 | 95 |
 
-An entry is its key and value plus 48 bytes, and v2 reserves its index up front, ~17 bytes per entry of capacity, so
-it never resizes. Fixed cost of an empty cache with capacity 1,000, most of it that reserved index:
+An entry is its key and value plus 48 bytes, and v2 reserves its index up front, ~17 bytes per entry of capacity
+(up to 1M entries), so it never resizes. Fixed cost of an empty cache with capacity 1,000, most of it that reserved
+index:
 
 | cores | empty cache | extra once used from every core at once |
 |---|---|---|
