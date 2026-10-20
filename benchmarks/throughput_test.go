@@ -29,6 +29,7 @@ func BenchmarkThroughput(b *testing.B) {
 			var builtFor int
 			b.Run(fmt.Sprintf("reads=%d%%/%s", readPct, impl.Name), func(b *testing.B) {
 				if procs := runtime.GOMAXPROCS(0); c == nil || builtFor != procs {
+					release(c)
 					c, builtFor = prefilled(impl), procs
 				}
 				b.ReportAllocs()
@@ -46,6 +47,7 @@ func BenchmarkThroughput(b *testing.B) {
 					}
 				})
 			})
+			release(c)
 		}
 	}
 }
@@ -68,6 +70,7 @@ func BenchmarkHotKey(b *testing.B) {
 	for _, impl := range Impls() {
 		b.Run(impl.Name, func(b *testing.B) {
 			c := impl.New(100)
+			b.Cleanup(func() { release(c) })
 			c.Set(1, 1)
 			c.Flush()
 			b.ReportAllocs()
@@ -87,6 +90,7 @@ func BenchmarkHotKeyReads(b *testing.B) {
 	for _, impl := range Impls() {
 		b.Run(impl.Name, func(b *testing.B) {
 			c := impl.New(100)
+			b.Cleanup(func() { release(c) })
 			c.Set(1, 1)
 			c.Flush()
 			b.ReportAllocs()

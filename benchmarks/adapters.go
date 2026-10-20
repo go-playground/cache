@@ -30,6 +30,14 @@ type Cache interface {
 	Flush()
 }
 
+// release stops a cache's background goroutines, for implementations that run any. Without it they keep the cache
+// reachable, and its retained heap slows every later benchmark in the process through longer GC cycles.
+func release(c Cache) {
+	if cl, ok := c.(interface{ Close() }); ok {
+		cl.Close()
+	}
+}
+
 // Impl constructs a cache bounded to capacity entries.
 type Impl struct {
 	Name string
@@ -130,6 +138,7 @@ func (a ristrettoCache) Get(k int) bool {
 }
 func (a ristrettoCache) Set(k, v int) { a.c.Set(k, v, 1) }
 func (a ristrettoCache) Flush()       { a.c.Wait() }
+func (a ristrettoCache) Close()       { a.c.Close() }
 
 type hashicorpCache struct{ c *hashicorp.Cache[int, int] }
 

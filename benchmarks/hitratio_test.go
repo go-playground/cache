@@ -68,7 +68,9 @@ func TestHitRatio(t *testing.T) {
 	for _, tr := range traces {
 		fmt.Fprintf(&sb, "| %s | %d |", tr.name, tr.capacity)
 		for _, impl := range bounded {
-			fmt.Fprintf(&sb, " %.2f%% |", 100*replay(impl.New(tr.capacity), tr.keys))
+			c := impl.New(tr.capacity)
+			fmt.Fprintf(&sb, " %.2f%% |", 100*replay(c, tr.keys))
+			release(c)
 		}
 		sb.WriteString("\n")
 	}
