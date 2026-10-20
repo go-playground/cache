@@ -679,3 +679,39 @@ func TestExpiredEntryIsReclaimedByTheReadThatFindsIt(t *testing.T) {
 		})
 	}
 }
+
+// TestTryDrainStopsAfterMaxRoundsUnderSustainedRequests simulates a write racing every maintenance round. The caller
+// must stop after maxDrainRounds rather than keep draining on behalf of others, and must not block on the lock.
+func TestTryDrainStopsAfterMaxRoundsUnderSustainedRequests(t *testing.T) {
+	e, _ := newEngine(t, policies()[0], 16, func(c *Config[int, int]) { c.ExpireAfterWrite(time.Hour) })
+	release := make(chan struct{})
+	var rounds atomic.Int32
+	// Maintenance reads the clock once per round, after marking itself in progress.
+	e.SetClockForTesting(func() int64 {
+		n := rounds.Add(1)
+		if n > maxDrainRounds {
+			<-release
+		}
+		if n <= 2*maxDrainRounds {
+			e.status.Store(drainRequired)
+		}
+		return 1
+	})
+
+	done := make(chan struct{})
+	go func() {
+		e.tryDrain()
+		close(done)
+	}()
+	select {
+	case <-done:
+		if got := rounds.Load(); got != maxDrainRounds {
+			t.Errorf("tryDrain ran %d maintenance rounds, want %d", got, maxDrainRounds)
+		}
+	case <-time.After(time.Second):
+		t.Error("tryDrain kept draining past maxDrainRounds on the caller's goroutine")
+	}
+	close(release)
+	<-done
+	e.Drain()
+}

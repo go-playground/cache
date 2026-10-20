@@ -489,7 +489,7 @@ func (e *Engine[K, V]) Notify(evs Evictions[K, V]) {
 }
 
 // locked blocks for the policy lock, runs maintenance then fn, and returns pending notifications. Like tryDrain it
-// re-checks for drain requests made while it held the lock, so no request is stranded.
+// re-checks for drain requests made while it held the lock.
 func (e *Engine[K, V]) locked(fn func()) Evictions[K, V] {
 	e.mu.Lock()
 	e.maintenance()
@@ -537,12 +537,13 @@ func (e *Engine[K, V]) requestDrain() {
 }
 
 // tryDrain runs maintenance if the policy lock is free. If more work was requested while it held the lock it loops,
-// so a request is never stranded between a holder's last check and its unlock, for at most maxDrainRounds rounds.
-// A request still pending after that, which needs sustained writes racing the holder, is handed to a goroutine so it
-// cannot be stranded until the next write: with a read-only workload afterwards nothing else would drain it.
+// so a request is not stranded between a holder's last check and its unlock, for at most maxDrainRounds rounds. A
+// request still pending after that, which needs sustained writes racing the holder, waits for the next write or for a
+// read that fills its buffer stripe; until then the cache may hold that many writes' worth of entries over capacity.
+// It never blocks on the lock, so a caller is never queued behind others' maintenance.
 func (e *Engine[K, V]) tryDrain() Evictions[K, V] {
 	var evs Evictions[K, V]
-	for i := range maxDrainRounds {
+	for range maxDrainRounds {
 		if !e.mu.TryLock() {
 			return evs
 		}
@@ -551,9 +552,6 @@ func (e *Engine[K, V]) tryDrain() Evictions[K, V] {
 		e.mu.Unlock()
 		if e.status.Load() != drainRequired {
 			return evs
-		}
-		if i == maxDrainRounds-1 {
-			go e.Notify(e.locked(nil))
 		}
 	}
 	return evs
