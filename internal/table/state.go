@@ -4,7 +4,6 @@ import (
 	"math"
 	"math/bits"
 	"runtime"
-	"sync"
 	"sync/atomic"
 
 	"github.com/go-playground/cache/v2/internal/node"
@@ -22,12 +21,10 @@ const (
 // MaxEntries is the most entries a table is sized for; beyond it buckets overflow into ever longer chains.
 const MaxEntries = 1 << 30
 
-// stripe guards the chains of the roots mapped to it and holds their share of the size counter, padded to a cache
-// line. Striping the locks by root keeps them off the buckets, which readers share, and lets a bucket hold six slots.
+// stripe is one cache-line padded slice of the size counter.
 type stripe struct {
-	mu sync.Mutex
-	n  atomic.Int64
-	_  [xruntime.CacheLine - 16]byte
+	n atomic.Int64
+	_ [xruntime.CacheLine - 8]byte
 }
 
 // state is one generation of the table. It is resized at most once: frozen is set by its single resizer and resized
@@ -78,7 +75,7 @@ func (s *state[K, V]) root(hash uint64) *bucket[K, V] {
 	return &s.buckets[s.index(hash)]
 }
 
-// stripeFor returns the stripe of hash, chosen by root so that every chain has exactly one lock and one counter.
+// stripeFor returns the counter stripe of hash, chosen by root so that every chain counts on exactly one stripe.
 func (s *state[K, V]) stripeFor(hash uint64) *stripe {
 	return &s.stripes[s.index(hash)&s.stripeMask]
 }
@@ -93,8 +90,7 @@ func (s *state[K, V]) size() int64 {
 	return sum
 }
 
-// store maps n.Key to n in the chain of root, whose stripe must be locked. It reports whether an overflow bucket was
-// added.
+// store maps n.Key to n in the chain of root, which must be locked. It reports whether an overflow bucket was added.
 func (s *state[K, V]) store(root *bucket[K, V], n *node.Node[K, V]) (old *node.Node[K, V], overflowed bool) {
 	tag := tagOf(n.Hash)
 	var free, last *bucket[K, V]
@@ -132,7 +128,7 @@ func (s *state[K, V]) lookup(root *bucket[K, V], hash uint64, key K) *node.Node[
 	return nil
 }
 
-// delete removes key from the chain of root, whose stripe must be locked.
+// delete removes key from the chain of root, which must be locked.
 func (s *state[K, V]) delete(root *bucket[K, V], hash uint64, key K) *node.Node[K, V] {
 	tag := tagOf(hash)
 	var prev *bucket[K, V]
@@ -147,7 +143,7 @@ func (s *state[K, V]) delete(root *bucket[K, V], hash uint64, key K) *node.Node[
 	return nil
 }
 
-// deleteNode removes exactly n from the chain of root, whose stripe must be locked.
+// deleteNode removes exactly n from the chain of root, which must be locked.
 func (s *state[K, V]) deleteNode(root *bucket[K, V], n *node.Node[K, V]) bool {
 	tag := tagOf(n.Hash)
 	var prev *bucket[K, V]
@@ -163,7 +159,7 @@ func (s *state[K, V]) deleteNode(root *bucket[K, V], n *node.Node[K, V]) bool {
 }
 
 // unlinkIfEmpty unlinks b, an overflow bucket following prev, once it holds nothing, so chains shrink back after
-// churn instead of staying at their peak length. Requires the chain's lock. b.next is left intact so a reader standing
+// churn instead of staying at their peak length. Requires the root lock. b.next is left intact so a reader standing
 // on b still reaches the rest of the chain, and b is never reused, so that reader can never see foreign entries.
 func unlinkIfEmpty[K comparable, V any](prev, b *bucket[K, V]) {
 	if prev == nil || b.meta.Load() != 0 {

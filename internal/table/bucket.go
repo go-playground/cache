@@ -2,23 +2,26 @@ package table
 
 import (
 	"math/bits"
+	"sync"
 	"sync/atomic"
 
 	"github.com/go-playground/cache/v2/internal/node"
 )
 
 const (
-	slotsPerBucket = 6
+	slotsPerBucket = 5
 	bucketSize     = 64
 
 	lsb      = 0x0101010101010101
 	slotMask = 0x8080808080808080 >> ((8 - slotsPerBucket) * 8)
 )
 
-// bucket is exactly one 64-byte cache line on 64-bit platforms: a word of tags, six node slots and the overflow link.
-// Writes to a chain are guarded by the lock of the root's stripe (see state.lock), not by the bucket, which is what
-// makes room for the sixth slot. meta holds one tag byte per slot, 0 meaning empty, and its unused upper bytes are
-// always 0.
+// bucket is exactly one 64-byte cache line on 64-bit platforms.
+//
+// Only the root bucket's mu is used; it guards every write to the whole chain. Keeping the lock on the line a write
+// modifies means a write moves one cache line between cores, not two: moving locks to a separate array to fit a sixth
+// slot made concurrent writes to one key up to 68% slower. meta holds one tag byte per slot, 0 meaning empty, and its
+// unused upper bytes are always 0.
 //
 // Invariant: a slot's tag byte is set whenever its pointer is non-nil. Inserts set the tag before storing the pointer
 // and deletes nil the pointer before clearing the tag, while replacements (same key, therefore same hash and tag) only
@@ -26,6 +29,7 @@ const (
 // load follows it always sees the tag, so readers never miss a key that was present for their whole call. A stale or
 // foreign tag is harmless because readers verify the loaded node's own Hash and Key.
 type bucket[K comparable, V any] struct {
+	mu    sync.Mutex
 	meta  atomic.Uint64
 	slots [slotsPerBucket]atomic.Pointer[node.Node[K, V]]
 	next  atomic.Pointer[bucket[K, V]]
@@ -79,13 +83,13 @@ func (b *bucket[K, V]) findNode(meta, tag uint64, n *node.Node[K, V]) int {
 	return -1
 }
 
-// publish stores n into empty slot i, tag first. Requires the chain's lock.
+// publish stores n into empty slot i, tag first. Requires the root lock.
 func (b *bucket[K, V]) publish(i int, tag uint64, n *node.Node[K, V]) {
 	b.meta.Store(b.meta.Load() | tag<<(i*8))
 	b.slots[i].Store(n)
 }
 
-// clear empties slot i, pointer first. Requires the chain's lock.
+// clear empties slot i, pointer first. Requires the root lock.
 func (b *bucket[K, V]) clear(i int) {
 	b.slots[i].Store(nil)
 	b.meta.Store(b.meta.Load() &^ (0xff << (i * 8)))

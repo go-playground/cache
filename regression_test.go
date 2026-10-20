@@ -110,8 +110,8 @@ func TestHugeTTLNeverWrapsToExpired(t *testing.T) {
 	}
 }
 
-// TestCapacityReservesTheIndexUpFront pins the documented cost of New: about 14 bytes of index per entry of
-// capacity (64-byte buckets of 6 slots at a 0.75 load factor), allocated when the cache is built so it never grows.
+// TestCapacityReservesTheIndexUpFront pins the documented cost of New: about 17 bytes of index per entry of
+// capacity (64-byte buckets of 5 slots at a 0.75 load factor), allocated when the cache is built so it never grows.
 func TestCapacityReservesTheIndexUpFront(t *testing.T) {
 	var before, after runtime.MemStats
 	runtime.GC()
@@ -119,8 +119,8 @@ func TestCapacityReservesTheIndexUpFront(t *testing.T) {
 	c := lru.New[int, int](1_000_000).Build()
 	runtime.ReadMemStats(&after)
 	grew := after.TotalAlloc - before.TotalAlloc
-	if grew < 13<<20 || grew > 16<<20 {
-		t.Fatalf("building a 1M entry cache allocated %d bytes, want ~14MB of index", grew)
+	if grew < 16<<20 || grew > 18<<20 {
+		t.Fatalf("building a 1M entry cache allocated %d bytes, want ~17MB of index", grew)
 	}
 	c.Set(1, 1)
 }

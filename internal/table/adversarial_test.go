@@ -125,14 +125,12 @@ func advCheckInvariants[K comparable](t testing.TB, tbl *Table[K, int]) map[K]*n
 	}
 	byKey := make(map[K]*node.Node[K, int])
 	perStripe := make([]int64, len(s.stripes))
-	for j := range s.stripes {
-		if !s.stripes[j].mu.TryLock() {
-			t.Fatalf("stripe %d left locked", j)
-		}
-		s.stripes[j].mu.Unlock()
-	}
 	for j := range s.buckets {
 		root := &s.buckets[j]
+		if !root.mu.TryLock() {
+			t.Fatalf("root %d left locked", j)
+		}
+		root.mu.Unlock()
 		for b := root; b != nil; b = b.next.Load() {
 			meta := b.meta.Load()
 			if meta>>(slotsPerBucket*8) != 0 {

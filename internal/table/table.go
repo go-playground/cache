@@ -1,9 +1,8 @@
 // Package table is a concurrent hash table from key to *node.Node with lock-free reads.
 //
-// The design follows CLHT: every bucket is one cache line holding a word of one-byte tags and six node slots, chained
-// to overflow buckets. Readers only perform atomic loads, so hot keys never bounce cache lines between reading cores.
-// Writers lock the stripe of the chain they modify: locks live in a small padded array indexed by root, not in the
-// buckets readers share. When an insert needs an overflow bucket while
+// The design follows CLHT: every bucket is one cache line holding a mutex, a word of one-byte tags and five node
+// slots, chained to overflow buckets. Readers only perform atomic loads, so hot keys never bounce cache lines between
+// reading cores. Writers lock the root bucket of the chain they modify. When an insert needs an overflow bucket while
 // the table is above a 0.75 load factor, it grows: doubling, or less on the final step to its bound, never past
 // MaxEntries, and never shrinking. Replaced tables are left intact so readers still holding them stay correct.
 //
@@ -69,9 +68,9 @@ func (t *Table[K, V]) Get(hash uint64, key K) *node.Node[K, V] {
 
 // Store maps n.Key to n, returning the node it replaced or nil.
 func (t *Table[K, V]) Store(n *node.Node[K, V]) (old *node.Node[K, V]) {
-	s, root, st := t.lockRoot(n.Hash)
+	s, root := t.lockRoot(n.Hash)
 	old, overflowed := s.store(root, n)
-	t.unlock(st)
+	t.unlock(root)
 	if overflowed && len(s.buckets) < t.maxBuckets && s.size() > s.resizeAt {
 		t.grow(s)
 	}
@@ -81,14 +80,14 @@ func (t *Table[K, V]) Store(n *node.Node[K, V]) (old *node.Node[K, V]) {
 // StoreIf maps n.Key to n only if the key currently maps to exactly expected (nil meaning unmapped), reporting whether
 // it did. It lets a caller publish a value computed from an earlier lookup without overwriting a newer mapping.
 func (t *Table[K, V]) StoreIf(expected, n *node.Node[K, V]) bool {
-	s, root, st := t.lockRoot(n.Hash)
+	s, root := t.lockRoot(n.Hash)
 	cur := s.lookup(root, n.Hash, n.Key)
 	if cur != expected {
-		t.unlock(st)
+		t.unlock(root)
 		return false
 	}
 	_, overflowed := s.store(root, n)
-	t.unlock(st)
+	t.unlock(root)
 	if overflowed && len(s.buckets) < t.maxBuckets && s.size() > s.resizeAt {
 		t.grow(s)
 	}
@@ -97,17 +96,17 @@ func (t *Table[K, V]) StoreIf(expected, n *node.Node[K, V]) bool {
 
 // Delete removes key, returning the removed node or nil.
 func (t *Table[K, V]) Delete(hash uint64, key K) (old *node.Node[K, V]) {
-	s, root, st := t.lockRoot(hash)
+	s, root := t.lockRoot(hash)
 	old = s.delete(root, hash, key)
-	t.unlock(st)
+	t.unlock(root)
 	return old
 }
 
 // DeleteNode removes n.Key only if it is currently mapped to exactly n (pointer equality). Reports whether it removed.
 func (t *Table[K, V]) DeleteNode(n *node.Node[K, V]) bool {
-	s, root, st := t.lockRoot(n.Hash)
+	s, root := t.lockRoot(n.Hash)
 	ok := s.deleteNode(root, n)
-	t.unlock(st)
+	t.unlock(root)
 	return ok
 }
 
@@ -155,32 +154,32 @@ func (t *Table[K, V]) Len() int {
 	return int(t.cur.Load().size())
 }
 
-// lockRoot returns the current state with the root bucket of hash and its stripe locked, never a frozen state.
+// lockRoot returns the current state with the root bucket of hash locked, never a frozen state.
 //
-// frozen is checked under the stripe lock. A writer that locked the stripe before the resizer did either sees frozen
-// unset and finishes its write before the resizer copies that stripe's roots, or sees it set. A writer that locks the
-// stripe after the resizer released it is ordered after the freeze by the mutex and sees it set. Writers seeing it set
-// wait for the successor, which is published before resized is closed, so no write is ever lost.
-func (t *Table[K, V]) lockRoot(hash uint64) (*state[K, V], *bucket[K, V], *stripe) {
+// frozen is checked under the root lock. A writer that locked the root before the resizer did either sees frozen
+// unset and finishes its write before the resizer copies that root, or sees it set. A writer that locks the root after
+// the resizer released it is ordered after the freeze by the mutex and sees it set. Writers seeing it set wait for the
+// successor, which is published before resized is closed, so no write is ever lost.
+func (t *Table[K, V]) lockRoot(hash uint64) (*state[K, V], *bucket[K, V]) {
 	if t.unsync {
 		s := t.cur.Load()
-		return s, s.root(hash), nil
+		return s, s.root(hash)
 	}
 	for {
 		s := t.cur.Load()
-		st := s.stripeFor(hash)
-		st.mu.Lock()
+		root := s.root(hash)
+		root.mu.Lock()
 		if !s.frozen.Load() {
-			return s, s.root(hash), st
+			return s, root
 		}
-		st.mu.Unlock()
+		root.mu.Unlock()
 		<-s.resized
 	}
 }
 
-func (t *Table[K, V]) unlock(st *stripe) {
-	if st != nil {
-		st.mu.Unlock()
+func (t *Table[K, V]) unlock(root *bucket[K, V]) {
+	if !t.unsync {
+		root.mu.Unlock()
 	}
 }
 
@@ -196,13 +195,12 @@ func (t *Table[K, V]) grow(s *state[K, V]) {
 	ns := newState[K, V](n)
 	oldN := uint64(len(s.buckets))
 	for i := range s.buckets {
-		var st *stripe
+		root := &s.buckets[i]
 		if !t.unsync {
-			st = &s.stripes[uint64(i)&s.stripeMask]
-			st.mu.Lock()
+			root.mu.Lock()
 		}
-		ns.copyChain(&s.buckets[i], uint64(i), oldN)
-		t.unlock(st)
+		ns.copyChain(root, uint64(i), oldN)
+		t.unlock(root)
 	}
 	t.cur.Store(ns)
 	t.resizes.Add(1)
