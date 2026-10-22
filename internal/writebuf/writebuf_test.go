@@ -206,3 +206,43 @@ func TestStripedContentionGrowsUpToProcessors(t *testing.T) {
 		t.Fatalf("grew to %d stripes, max %d", s.Stripes(), s.maxStripes)
 	}
 }
+
+// TestTinyCapacityNeverOverwritesUnreadItems: the sequence protocol needs two slots, so a request for fewer must still
+// hold every item it accepts.
+func TestTinyCapacityNeverOverwritesUnreadItems(t *testing.T) {
+	for _, capacity := range []int{0, 1} {
+		q := New[int](capacity)
+		var accepted []int
+		for i := range 4 {
+			if q.Enqueue(i) {
+				accepted = append(accepted, i)
+			}
+		}
+		for _, want := range accepted {
+			if got, ok := q.Dequeue(); !ok || got != want {
+				t.Fatalf("capacity %d: Dequeue = %d, %v; want %d", capacity, got, ok, want)
+			}
+		}
+		if _, ok := q.Dequeue(); ok {
+			t.Fatalf("capacity %d: more items dequeued than were accepted", capacity)
+		}
+	}
+}
+
+// TestDrainIsBoundedWhileProducersRefill: a drain holds the policy lock, so producers refilling a stripe as fast as it
+// empties must not keep one Drain call running.
+func TestDrainIsBoundedWhileProducersRefill(t *testing.T) {
+	s := NewStriped[int](4)
+	s.Enqueue(0)
+	drained := 0
+	s.Drain(func(v int) {
+		drained++
+		if drained > 1000 {
+			t.Fatal("Drain kept running while its queue was refilled")
+		}
+		s.Enqueue(v + 1)
+	})
+	if limit := 4 * s.Stripes(); drained > limit {
+		t.Fatalf("drained %d items in one call, want at most %d", drained, limit)
+	}
+}

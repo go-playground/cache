@@ -32,8 +32,10 @@ func New[T any](capacity int) *Queue[T] {
 	return q
 }
 
+// pow2 rounds capacity up to a power of two, at least 2: with one slot, a drained slot's sequence would equal the next
+// producer position, letting a second Enqueue overwrite an unread item.
 func pow2(capacity int) uint64 {
-	n := uint64(1)
+	n := uint64(2)
 	for n < uint64(capacity) {
 		n <<= 1
 	}
@@ -161,10 +163,12 @@ func (s *Striped[T]) Stripes() int {
 	return len(*s.stripes.Load())
 }
 
-// Drain dequeues every published item from every queue, calling fn for each. One consumer at a time.
+// Drain dequeues the published items of every queue, calling fn for each, at most one queue's capacity per queue so
+// producers refilling a queue as fast as it empties cannot keep the caller, who holds the policy lock, draining
+// forever. Items left behind are taken by the next drain. One consumer at a time.
 func (s *Striped[T]) Drain(fn func(T)) {
 	for _, q := range *s.stripes.Load() {
-		for {
+		for range len(q.buf) {
 			v, ok := q.Dequeue()
 			if !ok {
 				break
