@@ -46,7 +46,7 @@ func contentionGrowth(impl Impl) int64 {
 	before := baseline()
 	hammer(c)
 	after := baseline()
-	runtime.KeepAlive(c)
+	release(c)
 	return int64(after) - int64(before)
 }
 
@@ -89,18 +89,18 @@ func TestMemory(t *testing.T) {
 		before := baseline()
 		after, empty := heapAfter(impl, 1000, 0)
 		fmt.Fprintf(&sb, "| %s | %d |", impl.Name, int64(after)-int64(before))
-		runtime.KeepAlive(empty)
+		release(empty)
 		fmt.Fprintf(&sb, " %d |", contentionGrowth(impl))
 		for _, n := range sizes {
 			before := baseline()
 			after, c := heapAfter(impl, n, n)
 			fmt.Fprintf(&sb, " %.1f |", float64(int64(after)-int64(before))/float64(n))
-			runtime.KeepAlive(c)
+			release(c)
 		}
 		before = baseline()
 		after, churned := heapAfter(impl, churnCapacity, 3*churnCapacity)
 		fmt.Fprintf(&sb, " %.1f |", float64(int64(after)-int64(before))/churnCapacity)
-		runtime.KeepAlive(churned)
+		release(churned)
 		sb.WriteString("\n")
 	}
 	t.Log("\n" + sb.String())
