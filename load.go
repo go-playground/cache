@@ -188,7 +188,8 @@ func (f *inflight[K, V]) lead(ctx context.Context, e *core.Engine[K, V], s *load
 // Two guards keep a stale load from overwriting a newer write or resurrecting a removed key. Set, Remove and Clear
 // invalidate under the shard lock before writing the table, covering writes that saw the call registered. A write
 // that ran its invalidation just before the call was registered is caught by InsertIf: the store only happens if the
-// key still maps to what it did before the load began.
+// key still maps to what it did before the load began and that mapping is absent or expired, so a write published at
+// any point after the miss wins.
 func (f *inflight[K, V]) release(e *core.Engine[K, V], s *loadShard[K, V], key K, cl *call[K, V], n *core.Node[K, V], loaded Loader[K, V]) {
 	if loaded != nil {
 		e.RecordLoad(cl.res.IsErr())

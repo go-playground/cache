@@ -715,3 +715,35 @@ func TestTryDrainStopsAfterMaxRoundsUnderSustainedRequests(t *testing.T) {
 	<-done
 	e.Drain()
 }
+
+// TestInsertIfOnlyReplacesAMissingOrExpiredMapping pins the guard behind GetOrLoad: a load only runs after a miss, so
+// its result must never overwrite a live entry, even the one it captured as expected. That covers a Set published
+// between the load's miss and its snapshot, and an expired entry the direct engine rewrote in place.
+func TestInsertIfOnlyReplacesAMissingOrExpiredMapping(t *testing.T) {
+	for _, p := range policies() {
+		t.Run(p.name, func(t *testing.T) {
+			e, clk := newEngine(t, p, 16, func(c *Config[int, int]) { c.ExpireAfterWrite(time.Minute) })
+			h := e.Hash(1)
+
+			e.Set(1, 1)
+			if _, ok := e.InsertIf(e.Mapped(h, 1), e.NewNode(h, 1, 0)); ok {
+				t.Fatal("InsertIf replaced a live entry")
+			}
+
+			clk.Advance(2 * time.Minute)
+			expired := e.Mapped(h, 1)
+			e.Set(1, 2)
+			if _, ok := e.InsertIf(expired, e.NewNode(h, 1, 0)); ok {
+				t.Fatal("InsertIf replaced an entry rewritten after its snapshot")
+			}
+			if v := e.Get(1); v.IsNone() || v.Unwrap() != 2 {
+				t.Fatalf("Get = %v, want 2", v)
+			}
+
+			clk.Advance(2 * time.Minute)
+			if _, ok := e.InsertIf(e.Mapped(h, 1), e.NewNode(h, 1, 3)); !ok {
+				t.Fatal("InsertIf refused to replace an expired entry")
+			}
+		})
+	}
+}

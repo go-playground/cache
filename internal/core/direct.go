@@ -139,7 +139,8 @@ func (e *Engine[K, V]) insertDirect(n *node.Node[K, V]) Evictions[K, V] {
 // insertDirectIf is insertDirect only if n.Key still maps to exactly expected.
 func (e *Engine[K, V]) insertDirectIf(expected, n *node.Node[K, V]) (Evictions[K, V], bool) {
 	e.mu.Lock()
-	if e.table.Get(n.Hash, n.Key) != expected {
+	// Checked under the lock: an in-place Set can revive the expected node without changing its pointer.
+	if e.table.Get(n.Hash, n.Key) != expected || !e.replaceable(expected) {
 		e.mu.Unlock()
 		return nil, false
 	}

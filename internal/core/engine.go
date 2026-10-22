@@ -338,13 +338,15 @@ func (e *Engine[K, V]) Mapped(h uint64, k K) *Node[K, V] {
 	return e.table.Get(h, k)
 }
 
-// InsertIf is Insert only if k still maps to exactly expected (nil meaning absent), as returned by Mapped, reporting
-// whether it inserted. A value computed from an earlier lookup therefore never overwrites a newer write.
+// InsertIf is Insert only if k still maps to exactly expected (nil meaning absent), as returned by Mapped, and that
+// mapping is absent or expired, reporting whether it inserted. A value computed after a miss therefore never
+// overwrites a live entry: neither a newer write nor, in the direct engine, an expired entry rewritten in place.
 func (e *Engine[K, V]) InsertIf(expected, n *Node[K, V]) (Evictions[K, V], bool) {
 	if e.direct {
 		return e.insertDirectIf(expected, n)
 	}
-	if !e.table.StoreIf(expected, n) {
+	// Concurrent-mode nodes are never rewritten and an expired one never revives, so checking before the store holds.
+	if !e.replaceable(expected) || !e.table.StoreIf(expected, n) {
 		return nil, false
 	}
 	if e.stats != nil {
@@ -479,6 +481,11 @@ func (e *Engine[K, V]) Drain() {
 			})
 		}
 	}))
+}
+
+// replaceable reports whether a load may overwrite n, a mapping it captured: only an absent or expired one.
+func (e *Engine[K, V]) replaceable(n *Node[K, V]) bool {
+	return n == nil || (e.expiryMode != expireNever && n.IsExpired(e.now()))
 }
 
 // Notify delivers eviction notifications. Must be called without holding any cache lock.
