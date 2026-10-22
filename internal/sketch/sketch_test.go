@@ -1,6 +1,7 @@
 package sketch
 
 import (
+	"math"
 	"math/rand/v2"
 	"testing"
 )
@@ -122,7 +123,7 @@ func TestEnsureCapacity(t *testing.T) {
 func TestWords(t *testing.T) {
 	tests := []struct{ capacity, want int }{
 		{-1, 8}, {0, 8}, {1, 8}, {16, 8}, {18, 16}, {1000, 512}, {1024, 512}, {1026, 1024},
-		{maxCapacity, maxCapacity / 2}, {maxCapacity + 1, maxCapacity / 2}, {1 << 40, maxCapacity / 2},
+		{maxCapacity, maxCapacity / 2}, {maxCapacity + 1, maxCapacity / 2}, {math.MaxInt, maxCapacity / 2},
 	}
 	for _, tt := range tests {
 		if got := words(tt.capacity); got != tt.want {

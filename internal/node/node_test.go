@@ -7,6 +7,9 @@ import (
 
 // TestNodeIsCompact pins the entry size: K + V + 48 bytes, so int→int entries fill exactly one 64-byte allocation.
 func TestNodeIsCompact(t *testing.T) {
+	if unsafe.Sizeof(uintptr(0)) != 8 {
+		t.Skip("layout pinned for 64-bit platforms")
+	}
 	if got := unsafe.Sizeof(Node[int, int]{}); got != 64 {
 		t.Fatalf("Node[int, int] is %d bytes, want 64", got)
 	}
