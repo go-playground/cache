@@ -1,3 +1,5 @@
+SHELL := bash
+
 GOFLAGS ?=
 FUZZTIME ?= 30s
 ARC_TRACES ?=
@@ -18,7 +20,7 @@ fuzz:
 	go test -run=NONE -fuzz=FuzzTinyLFUAgainstModel -fuzztime=$(FUZZTIME) ./internal/policy/tinylfu/
 
 bench:
-	cd benchmarks && go test -run=NONE -bench=. -benchmem -cpu=1,2,4,8,16 -count=3 -timeout=120m . | tee bench.txt
+	set -o pipefail; cd benchmarks && go test -run=NONE -bench=. -benchmem -cpu=1,2,4,8,16 -count=3 -timeout=120m . | tee bench.txt
 	cd benchmarks && REPORT=bench.txt go test -run=TestReport -v .
 
 hitratio:
