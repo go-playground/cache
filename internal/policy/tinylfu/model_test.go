@@ -56,7 +56,7 @@ func (m *model) record(hit bool) {
 	if !m.adaptive {
 		return
 	}
-	amount := m.climber.record(hit)
+	amount := m.climber.record(hit, uint64(m.count()))
 	if amount == 0 {
 		return
 	}

@@ -13,6 +13,8 @@ const (
 // and restart at full size when the hit rate shifts sharply, which signals a workload change.
 type climber struct {
 	sampleSize  uint64
+	byEntries   bool
+	minEntries  uint64
 	initialStep float64
 	step        float64
 	prevHitRate float64
@@ -28,6 +30,16 @@ func newClimber(capacity uint64) climber {
 		initialStep: stepPercent * float64(capacity),
 	}
 	c.reset()
+	return c
+}
+
+// newEntryClimber returns a climber for a weighted cache, whose capacity is a total weight: each completed sample sizes
+// the next from the entries the cache holds, never fewer than min(capacity, initialSketch), so the period stays
+// meaningful however few, heavy entries it holds.
+func newEntryClimber(capacity uint64) climber {
+	c := newClimber(capacity)
+	c.byEntries, c.minEntries = true, min(capacity, initialSketch)
+	c.sampleSize = sampleSize(c.minEntries)
 	return c
 }
 
@@ -52,8 +64,9 @@ func (c *climber) reset() {
 	c.step = c.initialStep
 }
 
-// record counts a hit or miss and returns the window size adjustment, 0 until a sample completes.
-func (c *climber) record(hit bool) float64 {
+// record counts a hit or miss and returns the window size adjustment, 0 until a sample completes. entries is the
+// number the cache holds, used by an entry climber to size its next sample.
+func (c *climber) record(hit bool, entries uint64) float64 {
 	if hit {
 		c.hits++
 	} else {
@@ -63,7 +76,11 @@ func (c *climber) record(hit bool) float64 {
 	if n < c.sampleSize {
 		return 0
 	}
-	return c.climb(float64(c.hits) / float64(n))
+	amount := c.climb(float64(c.hits) / float64(n))
+	if c.byEntries {
+		c.sampleSize = sampleSize(max(entries, c.minEntries))
+	}
+	return amount
 }
 
 func (c *climber) climb(hitRate float64) float64 {

@@ -21,11 +21,11 @@ func sample(t *testing.T, c *climber, hitRate float64) float64 {
 	t.Helper()
 	hits := uint64(hitRate * float64(c.sampleSize))
 	for i := range c.sampleSize - 1 {
-		if amount := c.record(i < hits); amount != 0 {
+		if amount := c.record(i < hits, 100); amount != 0 {
 			t.Fatalf("adjusted %v mid sample", amount)
 		}
 	}
-	return c.record(hits == c.sampleSize)
+	return c.record(hits == c.sampleSize, 100)
 }
 
 func TestClimberFollowsHitRate(t *testing.T) {
@@ -127,5 +127,31 @@ func TestClimberKeepsWindowSmallForFrequency(t *testing.T) {
 	}
 	if mean := sum / seeds; mean > capacity/4 {
 		t.Errorf("mean window %.0f across seeds, want <= %d", mean, capacity/4)
+	}
+}
+
+// TestWeightedClimberAdaptsWithFewEntries: a weighted cache's capacity is a total weight, so the climber must sample
+// by the entries it holds. 64 entries of 1MiB in a 64MiB cache never outgrow the initial sketch, so nothing tied to
+// sketch growth would ever correct a sample sized from the weight.
+func TestWeightedClimberAdaptsWithFewEntries(t *testing.T) {
+	const entry = 1 << 20
+	p := NewWeighted[int, int](64*entry, true)
+	nodes := make(map[int]*testNode)
+	evict := func(n *testNode) { delete(nodes, n.Key) }
+	start := p.windowTarget
+	for _, k := range zipfTrace(1, 1.01, 256, 100_000) {
+		if n, ok := nodes[k]; ok {
+			p.Access(n)
+			continue
+		}
+		n := newNode(k, entry)
+		nodes[k] = n
+		p.Add(n, evict)
+	}
+	if limit := sampleSize(initialSketch); p.climber.sampleSize > limit {
+		t.Fatalf("sample size %d for %d entries, want at most %d", p.climber.sampleSize, len(nodes), limit)
+	}
+	if p.windowTarget == start {
+		t.Fatal("the adaptive window never moved")
 	}
 }

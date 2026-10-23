@@ -19,6 +19,7 @@ import (
 type Builder[K comparable, V any] struct {
 	cfg         core.Config[K, V]
 	fixedWindow bool
+	weighted    bool
 }
 
 // New returns a builder for a W-TinyLFU cache holding at most capacity entries.
@@ -39,7 +40,7 @@ func New[K comparable, V any](capacity uint64) *Builder[K, V] {
 // The number of entries a weighted cache holds is unknown up front, so its index starts small and grows as entries
 // are stored. With a nil weigher it reserves its index up front like New.
 func NewWeighted[K comparable, V any](capacity uint64, weigher cache.Weigher[K, V]) *Builder[K, V] {
-	b := &Builder[K, V]{}
+	b := &Builder[K, V]{weighted: weigher != nil}
 	b.cfg = core.NewConfig(capacity, weigher, b.newPolicy)
 	return b
 }
@@ -94,5 +95,8 @@ func (b *Builder[K, V]) Build() *cache.Cache[K, V] {
 }
 
 func (b *Builder[K, V]) newPolicy(capacity uint64) policy.Policy[K, V] {
+	if b.weighted {
+		return ptinylfu.NewWeighted[K, V](capacity, !b.fixedWindow)
+	}
 	return ptinylfu.New[K, V](capacity, !b.fixedWindow)
 }

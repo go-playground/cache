@@ -51,6 +51,7 @@ type Policy[K comparable, V any] struct {
 	sketchCap    int
 	rnd          func() uint32
 	adaptive     bool
+	weighted     bool
 	climber      climber
 }
 
@@ -70,6 +71,15 @@ func New[K comparable, V any](capacity uint64, adaptive bool) *Policy[K, V] {
 	}
 	p.sketchCap = p.sketch.Capacity()
 	p.resetWindow()
+	return p
+}
+
+// NewWeighted returns New for a cache whose capacity is a total weight. Its adaptive window samples by the entries
+// held, see newEntryClimber, instead of by capacity or sketch growth.
+func NewWeighted[K comparable, V any](capacity uint64, adaptive bool) *Policy[K, V] {
+	p := New[K, V](capacity, adaptive)
+	p.weighted = true
+	p.climber = newEntryClimber(capacity)
 	return p
 }
 
@@ -144,16 +154,15 @@ func (p *Policy[K, V]) rejects(n *node.Node[K, V]) bool {
 	return p.capacity == 0 || uint64(n.Weight) > p.capacity
 }
 
-// growSketch keeps the sketch sized for the entries tracked. For a weighted cache, whose capacity is a total weight,
-// the entry count is only known as it fills, so the climber's sample size follows the sketch's capacity: its first
-// sample after each growth covers 10x the entries actually held rather than 10x a weight.
+// growSketch keeps the sketch sized for the entries tracked, and for an unweighted cache sizes the climber's sample
+// from the sketch's capacity while it fills. A weighted cache's climber sizes its own samples, see newEntryClimber.
 func (p *Policy[K, V]) growSketch() {
 	if p.count+1 <= p.sketchCap {
 		return
 	}
 	p.sketch.EnsureCapacity(p.count + 1)
 	p.sketchCap = p.sketch.Capacity()
-	if p.adaptive && p.sketchCap < int(min(p.capacity, 1<<62)) {
+	if p.adaptive && !p.weighted && p.sketchCap < int(min(p.capacity, 1<<62)) {
 		p.climber.resample(uint64(p.sketchCap))
 	}
 }
@@ -162,7 +171,7 @@ func (p *Policy[K, V]) record(hit bool) {
 	if !p.adaptive {
 		return
 	}
-	amount := p.climber.record(hit)
+	amount := p.climber.record(hit, uint64(p.count))
 	if amount == 0 {
 		return
 	}
