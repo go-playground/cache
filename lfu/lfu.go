@@ -1,225 +1,100 @@
+// Package lfu builds caches that evict the least frequently used entry, breaking ties by least recent use.
+//
+// Frequencies never decay unless Aging is enabled, so entries popular in the past can outlive their usefulness; for
+// most workloads tinylfu has a higher hit ratio. Under concurrency frequency counting is approximate: reads are
+// recorded through a lossy buffer, so a small fraction of reads may not be counted.
 package lfu
 
 import (
-	listext "github.com/go-playground/pkg/v5/container/list"
-	syncext "github.com/go-playground/pkg/v5/sync"
-	timeext "github.com/go-playground/pkg/v5/time"
-	optionext "github.com/go-playground/pkg/v5/values/option"
 	"time"
+
+	cache "github.com/go-playground/cache/v2"
+	"github.com/go-playground/cache/v2/internal/builder"
+	"github.com/go-playground/cache/v2/internal/core"
+	"github.com/go-playground/cache/v2/internal/policy"
+	plfu "github.com/go-playground/cache/v2/internal/policy/lfu"
 )
 
-type builder[K comparable, V any] struct {
-	lfu *Cache[K, V]
+// Builder configures an LFU cache. Every setting except capacity is optional.
+type Builder[K comparable, V any] struct {
+	cfg        core.Config[K, V]
+	agingEvery uint64
 }
 
-// New initializes a builder to create an LFU cache.
-func New[K comparable, V any](capacity int) *builder[K, V] {
-	return &builder[K, V]{
-		lfu: &Cache[K, V]{
-			frequencies: listext.NewDoublyLinked[frequency[K, V]](),
-			entries:     make(map[K]*listext.Node[entry[K, V]]),
-			stats:       Stats{Capacity: capacity},
-		},
-	}
-}
-
-// MaxAge sets the maximum age of an entry before it will be passively discarded.
+// New returns a builder for an LFU cache holding at most capacity entries.
+// A capacity of 0 creates a cache that retains nothing, and a capacity above cache.MaxEntries (about 1.07 billion) is
+// treated as cache.MaxEntries.
 //
-// Default is no max age.
-func (b *builder[K, V]) MaxAge(maxAge time.Duration) *builder[K, V] {
-	if maxAge < 0 {
-		panic("MaxAge is not permitted to be a negative value")
-	}
-	b.lfu.maxAge = maxAge
+// Building the cache reserves its index up front, about 17 bytes per entry of capacity (e.g. 1.7MB for 100k entries,
+// 17MB for 1M), so it never resizes; capacities above 1M entries reserve 1M and grow towards their bound as they
+// fill. Entries themselves are allocated as they are stored, costing their key and value plus 48 bytes each.
+func New[K comparable, V any](capacity uint64) *Builder[K, V] {
+	return NewWeighted[K, V](capacity, nil)
+}
+
+// NewWeighted returns a builder for an LFU cache whose entries' total weight, as reported by weigher, is at
+// most capacity. Use a built-in weigher such as cache.WeighByLen or cache.WeighBySize, or any func(K, V) uint32.
+// A nil weigher weighs every entry as 1. An entry heavier than capacity is never retained.
+//
+// The number of entries a weighted cache holds is unknown up front, so its index starts small and grows as entries
+// are stored. With a nil weigher it reserves its index up front like New.
+func NewWeighted[K comparable, V any](capacity uint64, weigher cache.Weigher[K, V]) *Builder[K, V] {
+	b := &Builder[K, V]{}
+	b.cfg = core.NewConfig(capacity, weigher, b.newPolicy)
 	return b
 }
 
-// Build finalizes configuration and returns the LFU cache for use.
-func (b *builder[K, V]) Build() (lfu *Cache[K, V]) {
-	lfu = b.lfu
-	b.lfu = nil
-	return
+// ExpireAfterWrite expires entries d after they were last written. d <= 0 disables expiry.
+// Replaces any previously configured expiry.
+func (b *Builder[K, V]) ExpireAfterWrite(d time.Duration) *Builder[K, V] {
+	b.cfg.ExpireAfterWrite(d)
+	return b
 }
 
-// BuildThreadSafe finalizes configuration and returns an LRU cache for use guarded by a mutex.
-func (b *builder[K, V]) BuildThreadSafe() ThreadSafeCache[K, V] {
-	return ThreadSafeCache[K, V]{
-		cache: syncext.NewMutex2(b.Build()),
-	}
+// ExpireAfterAccess expires entries d after they were last read or written. d <= 0 disables expiry.
+// Replaces any previously configured expiry.
+func (b *Builder[K, V]) ExpireAfterAccess(d time.Duration) *Builder[K, V] {
+	b.cfg.ExpireAfterAccess(d)
+	return b
 }
 
-// Stats represents the cache statistics.
-type Stats struct {
-	// Capacity is the maximum cache capacity.
-	Capacity int
-
-	// Len is the current consumed cache capacity.
-	Len int
-
-	// Hits is the number of cache hits.
-	Hits uint
-
-	// Misses is the number of cache misses.
-	Misses uint
-
-	// Evictions is the number of cache evictions performed.
-	Evictions uint
-
-	// Gets is the number of cache gets performed regardless of a hit or miss.
-	Gets uint
-
-	// Sets is the number of cache sets performed.
-	Sets uint
+// ExpireAfter expires each entry after the duration fn returns when the entry is written; a result <= 0 means the
+// entry never expires. A nil fn disables expiry. Replaces any previously configured expiry.
+func (b *Builder[K, V]) ExpireAfter(fn func(key K, value V) time.Duration) *Builder[K, V] {
+	b.cfg.ExpireAfter(fn)
+	return b
 }
 
-type entry[K comparable, V any] struct {
-	key       K
-	value     V
-	frequency *listext.Node[frequency[K, V]]
-	timestamp timeext.Instant
+// OnEviction sets a callback invoked for every entry evicted due to capacity or expiry, but not for Remove, Clear or
+// replacement by Set (including of an expired entry not yet reclaimed). It is called outside of any cache lock, on
+// whichever goroutine performed the maintenance, possibly concurrently and in no particular order across keys, and
+// may safely call back into the cache. It should not block for long. A nil fn disables it.
+func (b *Builder[K, V]) OnEviction(fn func(key K, value V, cause cache.Cause)) *Builder[K, V] {
+	builder.OnEviction(&b.cfg, fn)
+	return b
 }
 
-type frequency[K comparable, V any] struct {
-	entries *listext.DoublyLinkedList[entry[K, V]]
-	count   int
+// RecordStats enables recording of hits, misses, sets and loads, reported by Cache.Stats. Disabled by default because
+// counting every read adds a shared write to the read path.
+func (b *Builder[K, V]) RecordStats() *Builder[K, V] {
+	b.cfg.RecordStats()
+	return b
 }
 
-// Cache is a configured least frequently used cache ready for use.
-type Cache[K comparable, V any] struct {
-	frequencies *listext.DoublyLinkedList[frequency[K, V]]
-	entries     map[K]*listext.Node[entry[K, V]]
-	maxAge      time.Duration
-	stats       Stats
+// Aging makes old popularity fade. LFU evicts the entry read the fewest times, and without aging those read counts only
+// ever grow: an entry read a million times last week outranks one read a thousand times today and is never evicted.
+// With aging, every entry's read count is halved after each `every` reads, so entries popular in the past gradually
+// lose their advantage to entries popular now. 0 disables aging, which is the default.
+func (b *Builder[K, V]) Aging(every uint64) *Builder[K, V] {
+	b.agingEvery = every
+	return b
 }
 
-// Set sets an item into the cache. It will replace the current entry if there is one.
-func (cache *Cache[K, V]) Set(key K, value V) {
-	cache.stats.Sets++
-
-	node, found := cache.entries[key]
-	if found {
-		node.Value.value = value
-		if cache.maxAge > 0 {
-			node.Value.timestamp = timeext.NewInstant()
-		}
-		node.Value.frequency.Value.entries.MoveToFront(node)
-	} else {
-
-		// determine or create frequency
-		freq := cache.frequencies.Back()
-		if freq == nil || freq.Value.count != 1 {
-			freq = cache.frequencies.PushBack(frequency[K, V]{
-				entries: listext.NewDoublyLinked[entry[K, V]](),
-				count:   1,
-			})
-		}
-		e := entry[K, V]{
-			key:       key,
-			value:     value,
-			frequency: freq,
-		}
-		if cache.maxAge > 0 {
-			e.timestamp = timeext.NewInstant()
-		}
-		cache.entries[key] = freq.Value.entries.PushFront(e)
-		if len(cache.entries) > cache.stats.Capacity {
-			// if we just added the back frequency node
-			if freq.Value.count == 1 && freq.Value.entries.Len() == 1 {
-				freq = freq.Prev()
-			}
-			if freq != nil {
-				ent := freq.Value.entries.PopBack()
-				ent.Value.frequency = nil // detach
-				delete(cache.entries, ent.Value.key)
-				if freq.Value.entries.Len() == 0 {
-					cache.frequencies.Remove(freq)
-				}
-				cache.stats.Evictions++
-			}
-		}
-	}
+// Build creates the cache. It never fails; the builder may be reused to build further independent caches.
+func (b *Builder[K, V]) Build() *cache.Cache[K, V] {
+	return cache.New(b.cfg)
 }
 
-// Get attempts to find an existing cache entry by key.
-// It returns an Option you must check before using the underlying value.
-func (cache *Cache[K, V]) Get(key K) (result optionext.Option[V]) {
-	cache.stats.Gets++
-
-	node, found := cache.entries[key]
-	if found {
-		if cache.maxAge > 0 && node.Value.timestamp.Elapsed() > cache.maxAge {
-			cache.remove(node)
-			cache.stats.Evictions++
-		} else {
-			cache.stats.Hits++
-			nextCount := node.Value.frequency.Value.count + 1
-			// super edge case, int can wrap around, if that's the case don't do anything but
-			// mark as most recently accessed, it's already in the top tier and so want to keep it
-			// there.
-			if nextCount <= 0 {
-				node.Value.frequency.Value.entries.MoveToFront(node)
-			} else {
-				prev := node.Value.frequency.Prev()
-				if prev == nil && node.Value.frequency.Value.entries.Len() == 1 {
-					// frequency is the head node and is the only entry, we can just increment the counter of the frequency
-					// as an early optimization.
-					node.Value.frequency.Value.count = nextCount
-				} else {
-					if prev == nil || prev.Value.count != nextCount {
-						prev = cache.frequencies.PushBefore(node.Value.frequency, frequency[K, V]{
-							entries: listext.NewDoublyLinked[entry[K, V]](),
-							count:   nextCount,
-						})
-					}
-					node.Value.frequency.Value.entries.Remove(node)
-					if node.Value.frequency.Value.entries.Len() == 0 {
-						cache.frequencies.Remove(node.Value.frequency)
-					}
-					node.Value.frequency = prev
-					prev.Value.entries.InsertAtFront(node)
-				}
-			}
-			result = optionext.Some(node.Value.value)
-		}
-	} else {
-		cache.stats.Misses++
-	}
-	return
-}
-
-// Remove removes the item matching the provided key from the cache, if not present is a noop.
-func (cache *Cache[K, V]) Remove(key K) {
-	if node, found := cache.entries[key]; found {
-		cache.remove(node)
-	}
-}
-
-func (cache *Cache[K, V]) remove(node *listext.Node[entry[K, V]]) {
-	delete(cache.entries, node.Value.key)
-	node.Value.frequency.Value.entries.Remove(node)
-	if node.Value.frequency.Value.entries.Len() == 0 {
-		cache.frequencies.Remove(node.Value.frequency)
-	}
-	node.Value.frequency = nil
-}
-
-// Clear empties the cache.
-func (cache *Cache[K, V]) Clear() {
-	for _, node := range cache.entries {
-		cache.remove(node)
-	}
-	// resets/empties stats
-	_ = cache.Stats()
-}
-
-// Stats returns the delta of Stats since last call to the Stats function.
-func (cache *Cache[K, V]) Stats() (stats Stats) {
-	stats = cache.stats
-	stats.Len = len(cache.entries)
-	cache.stats.Hits = 0
-	cache.stats.Misses = 0
-	cache.stats.Evictions = 0
-	cache.stats.Gets = 0
-	cache.stats.Sets = 0
-	return
+func (b *Builder[K, V]) newPolicy(capacity uint64) policy.Policy[K, V] {
+	return plfu.New[K, V](capacity, b.agingEvery)
 }

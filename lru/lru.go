@@ -1,172 +1,90 @@
+// Package lru builds caches that evict the least recently used entry.
+//
+// Under concurrency recency is approximate: reads are recorded through a lossy buffer, so a small fraction of reads
+// may not refresh an entry's position. LRU suits recency-biased workloads; for most workloads tinylfu has a higher
+// hit ratio.
 package lru
 
 import (
-	listext "github.com/go-playground/pkg/v5/container/list"
-	syncext "github.com/go-playground/pkg/v5/sync"
-	timeext "github.com/go-playground/pkg/v5/time"
-	optionext "github.com/go-playground/pkg/v5/values/option"
 	"time"
+
+	cache "github.com/go-playground/cache/v2"
+	"github.com/go-playground/cache/v2/internal/builder"
+	"github.com/go-playground/cache/v2/internal/core"
+	"github.com/go-playground/cache/v2/internal/policy"
+	plru "github.com/go-playground/cache/v2/internal/policy/lru"
 )
 
-type builder[K comparable, V any] struct {
-	lru *Cache[K, V]
+// Builder configures an LRU cache. Every setting except capacity is optional.
+type Builder[K comparable, V any] struct {
+	cfg core.Config[K, V]
 }
 
-// New initializes a builder to create an LRU cache.
-func New[K comparable, V any](capacity int) *builder[K, V] {
-	return &builder[K, V]{
-		lru: &Cache[K, V]{
-			list:  listext.NewDoublyLinked[entry[K, V]](),
-			nodes: make(map[K]*listext.Node[entry[K, V]]),
-			stats: Stats{Capacity: capacity},
-		},
-	}
-}
-
-// MaxAge sets the maximum age of an entry before it will be passively discarded.
+// New returns a builder for an LRU cache holding at most capacity entries.
+// A capacity of 0 creates a cache that retains nothing, and a capacity above cache.MaxEntries (about 1.07 billion) is
+// treated as cache.MaxEntries.
 //
-// Default is no max age.
-func (b *builder[K, V]) MaxAge(maxAge time.Duration) *builder[K, V] {
-	if maxAge < 0 {
-		panic("MaxAge is not permitted to be a negative value")
-	}
-	b.lru.maxAge = maxAge
+// Building the cache reserves its index up front, about 17 bytes per entry of capacity (e.g. 1.7MB for 100k entries,
+// 17MB for 1M), so it never resizes; capacities above 1M entries reserve 1M and grow towards their bound as they
+// fill. Entries themselves are allocated as they are stored, costing their key and value plus 48 bytes each.
+func New[K comparable, V any](capacity uint64) *Builder[K, V] {
+	return NewWeighted[K, V](capacity, nil)
+}
+
+// NewWeighted returns a builder for an LRU cache whose entries' total weight, as reported by weigher, is at
+// most capacity. Use a built-in weigher such as cache.WeighByLen or cache.WeighBySize, or any func(K, V) uint32.
+// A nil weigher weighs every entry as 1. An entry heavier than capacity is never retained.
+//
+// The number of entries a weighted cache holds is unknown up front, so its index starts small and grows as entries
+// are stored. With a nil weigher it reserves its index up front like New.
+func NewWeighted[K comparable, V any](capacity uint64, weigher cache.Weigher[K, V]) *Builder[K, V] {
+	b := &Builder[K, V]{}
+	b.cfg = core.NewConfig(capacity, weigher, b.newPolicy)
 	return b
 }
 
-// Build finalizes configuration and returns the LRU cache for use.
-func (b *builder[K, V]) Build() (lru *Cache[K, V]) {
-	lru = b.lru
-	b.lru = nil
-	return
+// ExpireAfterWrite expires entries d after they were last written. d <= 0 disables expiry.
+// Replaces any previously configured expiry.
+func (b *Builder[K, V]) ExpireAfterWrite(d time.Duration) *Builder[K, V] {
+	b.cfg.ExpireAfterWrite(d)
+	return b
 }
 
-// BuildThreadSafe finalizes configuration and returns an LRU cache for use guarded by a mutex.
-func (b *builder[K, V]) BuildThreadSafe() ThreadSafeCache[K, V] {
-	return ThreadSafeCache[K, V]{
-		cache: syncext.NewMutex2(b.Build()),
-	}
+// ExpireAfterAccess expires entries d after they were last read or written. d <= 0 disables expiry.
+// Replaces any previously configured expiry.
+func (b *Builder[K, V]) ExpireAfterAccess(d time.Duration) *Builder[K, V] {
+	b.cfg.ExpireAfterAccess(d)
+	return b
 }
 
-// Stats represents the cache statistics.
-type Stats struct {
-	// Capacity is the maximum cache capacity.
-	Capacity int
-
-	// Len is the current consumed cache capacity.
-	Len int
-
-	// Hits is the number of cache hits.
-	Hits uint
-
-	// Misses is the number of cache misses.
-	Misses uint
-
-	// Evictions is the number of cache evictions performed.
-	Evictions uint
-
-	// Gets is the number of cache gets performed regardless of a hit or miss.
-	Gets uint
-
-	// Sets is the number of cache sets performed.
-	Sets uint
+// ExpireAfter expires each entry after the duration fn returns when the entry is written; a result <= 0 means the
+// entry never expires. A nil fn disables expiry. Replaces any previously configured expiry.
+func (b *Builder[K, V]) ExpireAfter(fn func(key K, value V) time.Duration) *Builder[K, V] {
+	b.cfg.ExpireAfter(fn)
+	return b
 }
 
-type entry[K comparable, V any] struct {
-	key       K
-	value     V
-	timestamp timeext.Instant
+// OnEviction sets a callback invoked for every entry evicted due to capacity or expiry, but not for Remove, Clear or
+// replacement by Set (including of an expired entry not yet reclaimed). It is called outside of any cache lock, on
+// whichever goroutine performed the maintenance, possibly concurrently and in no particular order across keys, and
+// may safely call back into the cache. It should not block for long. A nil fn disables it.
+func (b *Builder[K, V]) OnEviction(fn func(key K, value V, cause cache.Cause)) *Builder[K, V] {
+	builder.OnEviction(&b.cfg, fn)
+	return b
 }
 
-// Cache is a configured least recently used cache ready for use.
-type Cache[K comparable, V any] struct {
-	list   *listext.DoublyLinkedList[entry[K, V]]
-	nodes  map[K]*listext.Node[entry[K, V]]
-	maxAge time.Duration
-	stats  Stats
+// RecordStats enables recording of hits, misses, sets and loads, reported by Cache.Stats. Disabled by default because
+// counting every read adds a shared write to the read path.
+func (b *Builder[K, V]) RecordStats() *Builder[K, V] {
+	b.cfg.RecordStats()
+	return b
 }
 
-// Set sets an item into the cache. It will replace the current entry if there is one.
-func (cache *Cache[K, V]) Set(key K, value V) {
-	cache.stats.Sets++
-
-	node, found := cache.nodes[key]
-	if found {
-		node.Value.value = value
-		if cache.maxAge > 0 {
-			node.Value.timestamp = timeext.NewInstant()
-		}
-		cache.list.MoveToFront(node)
-	} else {
-		e := entry[K, V]{
-			key:   key,
-			value: value,
-		}
-		if cache.maxAge > 0 {
-			e.timestamp = timeext.NewInstant()
-		}
-		cache.nodes[key] = cache.list.PushFront(e)
-		if cache.list.Len() > cache.stats.Capacity {
-			entry := cache.list.PopBack()
-			delete(cache.nodes, entry.Value.key)
-			cache.stats.Evictions++
-		}
-	}
+// Build creates the cache. It never fails; the builder may be reused to build further independent caches.
+func (b *Builder[K, V]) Build() *cache.Cache[K, V] {
+	return cache.New(b.cfg)
 }
 
-// Get attempts to find an existing cache entry by key.
-// It returns an Option you must check before using the underlying value.
-func (cache *Cache[K, V]) Get(key K) (result optionext.Option[V]) {
-	cache.stats.Gets++
-
-	node, found := cache.nodes[key]
-	if found {
-		if cache.maxAge > 0 && node.Value.timestamp.Elapsed() > cache.maxAge {
-			delete(cache.nodes, key)
-			cache.list.Remove(node)
-			cache.stats.Evictions++
-		} else {
-			cache.list.MoveToFront(node)
-			result = optionext.Some(node.Value.value)
-			cache.stats.Hits++
-		}
-	} else {
-		cache.stats.Misses++
-	}
-	return
-}
-
-// Remove removes the item matching the provided key from the cache, if not present is a noop.
-func (cache *Cache[K, V]) Remove(key K) {
-	if node, found := cache.nodes[key]; found {
-		cache.remove(node)
-	}
-}
-
-func (cache *Cache[K, V]) remove(node *listext.Node[entry[K, V]]) {
-	if node, found := cache.nodes[node.Value.key]; found {
-		delete(cache.nodes, node.Value.key)
-		cache.list.Remove(node)
-	}
-}
-
-// Clear empties the cache.
-func (cache *Cache[K, V]) Clear() {
-	for _, node := range cache.nodes {
-		cache.remove(node)
-	}
-	// resets/empties stats
-	_ = cache.Stats()
-}
-
-// Stats returns the delta of Stats since last call to the Stats function.
-func (cache *Cache[K, V]) Stats() (stats Stats) {
-	stats = cache.stats
-	stats.Len = cache.list.Len()
-	cache.stats.Hits = 0
-	cache.stats.Misses = 0
-	cache.stats.Evictions = 0
-	cache.stats.Gets = 0
-	cache.stats.Sets = 0
-	return
+func (b *Builder[K, V]) newPolicy(capacity uint64) policy.Policy[K, V] {
+	return plru.New[K, V](capacity)
 }

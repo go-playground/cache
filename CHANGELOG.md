@@ -6,6 +6,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - Unreleased
+v2 is a rewrite: a concurrent-first engine with pluggable eviction policies. The module path is now
+`github.com/go-playground/cache/v2`; v1 remains available at its existing tags.
+
+### Added
+- Lock-free reads: a concurrent hash table with lock-free lookups, with eviction bookkeeping batched through lossy
+  striped read buffers and a bounded write buffer, applied by whichever caller acquires the policy lock. No background
+  goroutines.
+- Four policies, each with its own builder producing the same `*cache.Cache[K, V]`: `lru`, `lfu`, `tinylfu`
+  (W-TinyLFU, recommended default) and `s3fifo` (S3-FIFO).
+- `GetOrLoad` with per-key single-flight loading, context cancellation, panic propagation and protection against
+  resurrecting removed keys.
+- Weighted capacity via `NewWeighted` with built-in weighers `cache.WeighByLen`, `cache.WeighByKeyAndLen` and
+  `cache.WeighBySize`.
+- Expiry modes `ExpireAfterWrite`, `ExpireAfterAccess` and per-entry `ExpireAfter`. Expired entries are never
+  returned and are reclaimed by an incremental sweep, costing 8 bytes per entry.
+- Compact entries (key + value + 48 bytes) and a table sized exactly to capacity; buffers grow per core only under
+  contention.
+- `OnEviction` callbacks with a `cache.Cause`, invoked outside of locks.
+- Optional `RecordStats`; `Stats` now reports cumulative values with `Gets` and `HitRatio` helpers.
+
+### Changed
+- Every cache is safe for concurrent use; the separate non-thread-safe and `BuildThreadSafe` variants are gone.
+- `Stats` is cumulative instead of resetting on each call.
+- `MaxAge` is replaced by `ExpireAfterWrite`. Invalid arguments are documented no-ops instead of panics.
+- Requires Go 1.27.
+
+### Removed
+- `LockGuard`: multi-operation locking is incompatible with lock-free reads.
+
 ## [1.1.0] - 2023-07-19
 ### Changed
 - Updated dependencies.
