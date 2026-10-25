@@ -242,7 +242,7 @@ func TestDrainIsBoundedWhileProducersRefill(t *testing.T) {
 		}
 		s.Enqueue(v + 1)
 	})
-	if limit := 4 * s.Stripes(); drained > limit {
+	if limit := drainPasses * 4 * s.Stripes(); drained > limit {
 		t.Fatalf("drained %d items in one call, want at most %d", drained, limit)
 	}
 }

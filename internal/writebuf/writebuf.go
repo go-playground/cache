@@ -163,12 +163,16 @@ func (s *Striped[T]) Stripes() int {
 	return len(*s.stripes.Load())
 }
 
-// Drain dequeues the published items of every queue, calling fn for each, at most one queue's capacity per queue so
+// drainPasses bounds one Drain to this many queue capacities per queue. One capacity measured up to 6% slower on
+// 16-core mixed reads and writes, from the extra lock handoffs of stopping early; four matched an unbounded drain.
+const drainPasses = 4
+
+// Drain dequeues the published items of every queue, calling fn for each, at most drainPasses capacities per queue so
 // producers refilling a queue as fast as it empties cannot keep the caller, who holds the policy lock, draining
 // forever. Items left behind are taken by the next drain. One consumer at a time.
 func (s *Striped[T]) Drain(fn func(T)) {
 	for _, q := range *s.stripes.Load() {
-		for range len(q.buf) {
+		for range drainPasses * len(q.buf) {
 			v, ok := q.Dequeue()
 			if !ok {
 				break
